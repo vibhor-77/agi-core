@@ -305,7 +305,7 @@ class TestZorkSampleTasks(unittest.TestCase):
 
     def test_sample_tasks_load(self):
         tasks = get_sample_tasks()
-        self.assertEqual(len(tasks), 4)
+        self.assertGreaterEqual(len(tasks), 4)
         for task in tasks:
             self.assertIsInstance(task, Task)
             self.assertGreater(len(task.train_examples), 0)

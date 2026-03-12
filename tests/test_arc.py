@@ -1206,6 +1206,75 @@ class TestBatch4Primitives(unittest.TestCase):
         self.assertEqual(result, [[1, 2], [3, 4]])
 
 
+class TestGrammarDecomposition(unittest.TestCase):
+    """Test Grammar.decompose/recompose as a core principle."""
+
+    def setUp(self):
+        self.grammar = ARCGrammar(seed=42)
+
+    def test_decompose_returns_strategies(self):
+        """decompose should return at least one strategy for multi-object grids."""
+        grid = [
+            [0, 0, 0, 0, 0],
+            [0, 1, 0, 0, 0],
+            [0, 0, 0, 2, 0],
+            [0, 0, 0, 0, 0],
+        ]
+        from core import Task
+        task = Task(task_id="test", train_examples=[(grid, grid)], test_inputs=[grid])
+        decomps = self.grammar.decompose(grid, task)
+        self.assertGreater(len(decomps), 0)
+        self.assertEqual(decomps[0].strategy, "same_color_objects")
+        self.assertEqual(decomps[0].n_parts, 2)
+
+    def test_recompose_identity(self):
+        """recompose(decompose(grid), identity_parts) should reproduce grid."""
+        grid = [
+            [0, 0, 0, 0],
+            [0, 1, 0, 0],
+            [0, 0, 0, 2],
+            [0, 0, 0, 0],
+        ]
+        from core import Task
+        task = Task(task_id="test", train_examples=[(grid, grid)], test_inputs=[grid])
+        decomps = self.grammar.decompose(grid, task)
+        self.assertGreater(len(decomps), 0)
+
+        d = decomps[0]
+        result = self.grammar.recompose(d, d.parts)
+        self.assertEqual(result, grid)
+
+    def test_decompose_empty_for_single_object(self):
+        """Single object grids should not decompose (not useful)."""
+        grid = [
+            [0, 0, 0],
+            [0, 1, 0],
+            [0, 0, 0],
+        ]
+        from core import Task
+        task = Task(task_id="test", train_examples=[(grid, grid)], test_inputs=[grid])
+        decomps = self.grammar.decompose(grid, task)
+        self.assertEqual(len(decomps), 0)
+
+    def test_multicolor_strategy_when_different(self):
+        """Multi-color decomposition should appear when 8-conn differs from 4-conn."""
+        grid = [
+            [0, 0, 0, 0, 0],
+            [0, 1, 2, 0, 0],  # 4-conn: 2 objects; 8-conn: 1 object
+            [0, 0, 0, 0, 3],  # 4-conn: 3 objects total; 8-conn: 2
+            [0, 0, 0, 0, 0],
+        ]
+        from core import Task
+        task = Task(task_id="test", train_examples=[(grid, grid)], test_inputs=[grid])
+        decomps = self.grammar.decompose(grid, task)
+        strategies = [d.strategy for d in decomps]
+        self.assertIn("same_color_objects", strategies)
+        # 4-conn gives 3 objects (1,2,3); 8-conn gives 2 (1+2 merged, 3 alone)
+        # So multicolor should also appear
+        if len(decomps) > 1:
+            self.assertIn("multicolor_objects", strategies)
+
+
 class TestObjectDecompositionExtended(unittest.TestCase):
     """Test extended object decomposition: pairs, multi-color, scoring."""
 

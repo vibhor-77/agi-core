@@ -7,10 +7,16 @@ from __future__ import annotations
 import copy
 import random
 
-from core import Grammar, Primitive, Program, Task
+from typing import Any
+
+from core import Grammar, Primitive, Program, Task, Decomposition
 from .primitives import (
     ARC_PRIMITIVES, ARC_PREDICATES, _PRIM_MAP,
     _make_replace_color,
+)
+from .objects import (
+    find_foreground_shapes, find_multicolor_objects, place_subgrid,
+    _get_background_color,
 )
 
 
@@ -274,4 +280,75 @@ class ARCGrammar(Grammar):
         for child in program.children:
             result.extend(self._collect_nodes(child))
         return result
+
+    # --- Decomposition (inverse of composition) ---
+
+    def decompose(self, input_data: Any, task: Task) -> list[Decomposition]:
+        """Decompose an ARC grid into objects for independent transformation.
+
+        Returns multiple decomposition strategies:
+        1. Same-color objects (4-connectivity) — standard ARC objects
+        2. Multi-color objects (8-connectivity) — for multi-colored patterns
+
+        Each Decomposition contains the subgrids and reassembly context
+        (positions, background color, grid dimensions).
+        """
+        grid = input_data
+        if not grid or not grid[0]:
+            return []
+
+        bg_color = _get_background_color(grid)
+        h, w = len(grid), len(grid[0])
+        decompositions = []
+
+        # Strategy 1: Same-color objects (4-connectivity)
+        shapes = find_foreground_shapes(grid)
+        if shapes and len(shapes) >= 2:
+            decompositions.append(Decomposition(
+                strategy="same_color_objects",
+                parts=[s["subgrid"] for s in shapes],
+                context={
+                    "positions": [s["position"] for s in shapes],
+                    "bg_color": bg_color,
+                    "grid_h": h,
+                    "grid_w": w,
+                },
+            ))
+
+        # Strategy 2: Multi-color objects (8-connectivity)
+        mc_objects = find_multicolor_objects(grid, bg_color)
+        if mc_objects and len(mc_objects) >= 2:
+            # Only add if different from strategy 1
+            mc_parts = [o["subgrid"] for o in mc_objects]
+            if len(mc_objects) != len(shapes):
+                decompositions.append(Decomposition(
+                    strategy="multicolor_objects",
+                    parts=mc_parts,
+                    context={
+                        "positions": [o["position"] for o in mc_objects],
+                        "bg_color": bg_color,
+                        "grid_h": h,
+                        "grid_w": w,
+                    },
+                ))
+
+        return decompositions
+
+    def recompose(self, decomposition: Decomposition,
+                  transformed_parts: list[Any]) -> Any:
+        """Reassemble transformed ARC subgrids back onto a canvas."""
+        ctx = decomposition.context
+        bg = ctx.get("bg_color", 0)
+        h = ctx.get("grid_h", 0)
+        w = ctx.get("grid_w", 0)
+        positions = ctx.get("positions", [])
+
+        if not h or not w:
+            return transformed_parts[0] if transformed_parts else None
+
+        canvas = [[bg] * w for _ in range(h)]
+        for part, pos in zip(transformed_parts, positions):
+            if part is not None:
+                canvas = place_subgrid(canvas, part, pos, transparent_color=bg)
+        return canvas
 

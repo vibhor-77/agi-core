@@ -1313,4 +1313,43 @@ The search finds programs that get the **geometry** right — correct shapes, po
 
 ---
 
+### Decision 64: Decomposition as a Core Principle (Pillar 3 Dual)
+
+**Date:** 2026-03-12
+**Context:** User insight: "Decomposition is the flip side of composition" — it should be a first-class operation in the core loop, not just an ARC-specific hack. Complex problems are universally solved by decomposing into sub-problems, solving each, and recomposing.
+
+**Architectural change:**
+
+1. **New data type `Decomposition`** (`core/types.py`): Represents a structured decomposition of an input into parts with reassembly context. Fields: `strategy` (name), `parts` (sub-problems), `context` (reassembly info).
+
+2. **Grammar gains `decompose()` and `recompose()` methods** (`core/interfaces.py`):
+   - `decompose(input, task) → list[Decomposition]` — proposes multiple decomposition strategies
+   - `recompose(decomposition, transformed_parts) → output` — reassembles transformed parts
+   - Default: no decomposition (returns empty list)
+
+3. **ARCGrammar implements both** (`domains/arc/grammar.py`):
+   - Strategy 1: Same-color objects (4-connectivity) — standard ARC objects
+   - Strategy 2: Multi-color objects (8-connectivity) — for multi-colored patterns
+   - Recompose: place subgrids back at original positions on background canvas
+
+4. **Phase 1.15 in learner** (`core/learner.py`): Generic decomposition phase that uses `grammar.decompose()` + `grammar.recompose()`. Tries each primitive as a per-part transform. Domain-agnostic — works for any Grammar that implements decompose/recompose.
+
+**Design rationale:** Decomposition belongs on the Grammar (not Environment) because:
+- Grammar defines "how things compose" — it should also define "how they decompose"
+- Composition and decomposition are duals of the same abstraction
+- Both are domain-specific but structurally universal
+
+**Two levels of decomposition in ARC (user's framework):**
+1. **Input decomposition** (perception): "How was this grid generated?" — detecting background, objects, patterns. This is inverse rendering.
+2. **Transform decomposition** (program synthesis): "What operations map input to output?" — operating on the objects from level 1.
+
+The key relationship: transform primitives operate on object primitives. You can't correctly express "rotate each object" without first decomposing the grid into objects.
+
+**Future directions:**
+- Recursive decomposition: decompose → solve → if stuck, decompose parts further
+- Learned decomposition strategies: the sleep phase should discover new decomposition patterns from solved tasks
+- Grammar evolution: decomposition strategies themselves should be primitives that can be composed and evolved
+
+---
+
 *This document will be updated with each new session and major decision.*

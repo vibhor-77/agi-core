@@ -1130,6 +1130,53 @@ Worst: 26 primitives appear only in overfit solutions.
 2. Leave-one-out validation within training examples
 3. Accept the 8-solve cost as the price of halving overfitting
 
+### Decision 57: Adaptive Compute Reallocation — Negative Result
+
+**Hypothesis:** Near-miss tasks (152 tasks with error < 0.15) might convert to solves with more compute and wider search breadth.
+
+**Implementation:** `--adaptive-realloc` flag in `CurriculumConfig`. After the first wake pass, re-runs near-miss tasks with:
+- 3x eval budget
+- +20 pair top-K (40→60)
+- +10 triple top-K (15→25)
+
+**400-task results:**
+
+| Metric | Without realloc | With realloc |
+|--------|----------------|-------------|
+| Truly solved | 77/400 (19.2%) | 77/400 (19.2%) |
+| Overfit | 8 | 9 |
+| Extra compute | 0 | ~152 tasks re-run |
+
+**Verdict: No improvement.** The near-misses are NOT budget-constrained or breadth-constrained. The exhaustive search already covers all depth-1, depth-2, and most depth-3 compositions in the first pass. More compute just re-does the same work.
+
+**Root cause confirmed: The bottleneck is primitive coverage, not search compute.**
+- 76 depth-0 near-misses: No single primitive in the 342 available solves these
+- 73 depth-1 near-misses: No 2-primitive composition works either
+- 3 depth-2 near-misses: Even 3-primitive chains aren't enough
+
+**Near-miss pattern analysis (training set only):**
+- `identity` appears 19 times (search found nothing useful)
+- `draw_diag(complete_diag)` appears 3 times at err=0.017 (very close)
+- Top root primitives: identity(19), complete_diag(4), mark_inters_excl_axis(3)
+- Error distribution: 18 tasks under 0.03, 45 under 0.05, 103 under 0.10
+
+**Next step:** Analyze training near-miss input/output pairs to identify what primitives are missing. The 18 tasks with error < 0.03 are the highest priority — the search is *almost* there, suggesting a small primitive gap.
+
+### Decision 58: Eval Generalization Strategy — No Data Leakage
+
+**Principle:** Eval set is scoring-only. All primitive design, algorithm tuning, and analysis use training data exclusively.
+
+**Leakage-free approaches to improving eval:**
+1. **Training near-miss analysis**: Inspect training I/O pairs for near-miss tasks to identify missing primitives. These primitives are domain-general (grid transformations), not task-specific.
+2. **Primitive generalization filtering**: Only promote primitives with 100% gen rate on training (Decision 54). New primitives must meet this bar.
+3. **Algorithm improvements**: Search optimizations (like adaptive realloc) apply uniformly to all tasks. If they help training, they help eval.
+4. **Structural primitives**: Adding general grid operations (symmetry, color remapping, object manipulation) is domain knowledge, not data leakage.
+
+**What we will NOT do:**
+- Inspect eval task patterns to design primitives
+- Tune thresholds to maximize eval scores
+- Cherry-pick eval results
+
 ---
 
 *This document will be updated with each new session and major decision.*

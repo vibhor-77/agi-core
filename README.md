@@ -283,7 +283,10 @@ agi-core/
 │   └── metrics.py           # Compounding curve measurement
 │
 ├── experiments/             # Thin domain-specific wrappers over core/runner.py
-│   └── phase1_arc.py        # ARC curriculum training (dataset loading + ARC wiring)
+│   ├── phase1_arc.py        # ARC-AGI-1 training & evaluation pipeline
+│   ├── phase2_arc.py        # ARC-AGI-2 baseline experiment
+│   ├── zork_baseline.py     # Zork text adventure baseline
+│   └── list_compounding.py  # List ops compounding demonstration
 │
 ├── domains/                 # Domain implementations (all 4 interfaces)
 │   ├── arc/                 # ARC-AGI grid transformations (342 primitives)
@@ -295,10 +298,12 @@ agi-core/
 │   │   └── dataset.py       # Task loading + sample tasks
 │   ├── symbolic_math/       # 1D symbolic regression (15 math primitives)
 │   │   └── __init__.py      # All 4 interfaces in one file
+│   ├── list_ops/            # List operations (22 primitives, compounding demo)
+│   │   └── __init__.py      # All 4 interfaces in one file
 │   └── zork/                # Text adventure (30 action primitives, 16 predicates)
 │       └── __init__.py      # Game engine + all 4 interfaces
 │
-├── tests/                   # Test suite (471 tests, 12 files)
+├── tests/                   # Test suite (473 tests, 12 files)
 │   ├── test_arc.py
 │   ├── test_color_fix.py
 │   ├── test_conditional_search.py

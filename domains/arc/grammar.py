@@ -92,7 +92,13 @@ class ARCGrammar(Grammar):
         return list(ARC_PRIMITIVES) + self._task_prims
 
     def prepare_for_task(self, task: Task) -> None:
-        """Analyze training examples to create task-specific color primitives."""
+        """Analyze training examples to create task-specific color primitives.
+
+        Generates three categories of task-specific primitives:
+        1. Color introduction/removal: for colors that appear/disappear between I/O
+        2. Color replacement: for pairs where one color consistently replaces another
+        3. Dominant-color operations: recolor to the task's most common output color
+        """
         self._task_prims = []
         if not task.train_examples:
             return
@@ -127,6 +133,40 @@ class ARCGrammar(Grammar):
                 if name not in prim_names:
                     self._task_prims.append(Primitive(
                         name=name, arity=1, fn=_make_replace_color(old_c, new_c), domain="arc"))
+                    prim_names.add(name)
+
+        # --- Pixel-level color transition analysis ---
+        # Collect per-pixel color changes across all training examples.
+        # If color A consistently becomes color B (>70% of transitions),
+        # create a task-specific replacement primitive.
+        from collections import Counter
+        transitions: Counter = Counter()
+        for inp, out in task.train_examples:
+            h_i, w_i = len(inp), len(inp[0]) if inp else 0
+            h_o, w_o = len(out), len(out[0]) if out else 0
+            if h_i != h_o or w_i != w_o:
+                continue  # skip size-changing tasks for this analysis
+            for r in range(h_i):
+                for c in range(w_i):
+                    if inp[r][c] != out[r][c]:
+                        transitions[(inp[r][c], out[r][c])] += 1
+
+        # Group by source color
+        by_src: dict[int, Counter] = {}
+        for (src, dst), count in transitions.items():
+            if src not in by_src:
+                by_src[src] = Counter()
+            by_src[src][dst] += count
+
+        for src, tally in by_src.items():
+            best_dst, best_count = tally.most_common(1)[0]
+            total = sum(tally.values())
+            if best_count / total >= 0.70 and best_count >= 2:
+                name = f"task_recolor_{src}_to_{best_dst}"
+                if name not in prim_names:
+                    self._task_prims.append(Primitive(
+                        name=name, arity=1,
+                        fn=_make_replace_color(src, best_dst), domain="arc"))
                     prim_names.add(name)
 
         # Register task prims in _PRIM_MAP for execution

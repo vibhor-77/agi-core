@@ -497,7 +497,11 @@ class TestTaskSpecificPrimitives(unittest.TestCase):
         self.assertIn("task_swap_3_to_5", prim_names)
 
     def test_prepare_no_extra_prims_when_same_colors(self):
-        """No task-specific prims when input and output have same colors."""
+        """No *color-introduction* prims when input and output have same colors.
+
+        Note: pixel-transition prims (task_recolor_X_to_Y) may still be
+        generated when colors are swapped between I/O positions.
+        """
         grammar = ARCGrammar(seed=42)
         task = Task(
             task_id="test",
@@ -509,7 +513,12 @@ class TestTaskSpecificPrimitives(unittest.TestCase):
         grammar.prepare_for_task(task)
         base_count = len(ARC_PRIMITIVES)
         total_count = len(grammar.base_primitives())
-        self.assertEqual(total_count, base_count)
+        # No new/removed colors → no fill/remove prims, but pixel
+        # transitions (1→2, 2→1) may generate task_recolor prims.
+        task_prims = [p for p in grammar.base_primitives() if p.name.startswith("task_")]
+        for p in task_prims:
+            self.assertTrue(p.name.startswith("task_recolor_"),
+                            f"Unexpected task prim: {p.name}")
 
     def test_task_prims_executable(self):
         """Task-specific primitives should be executable via ARCEnv."""

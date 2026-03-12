@@ -1252,6 +1252,45 @@ The search finds programs that get the **geometry** right — correct shapes, po
 
 **Decision:** Keep the 7 new primitives (they're useful at depth-0 for 3 tasks, and will compose better as the library grows). But the next breakthrough requires parameterized/learned primitives, not more hand-coded ones.
 
+### Decision 61: Pixel-Transition Primitives + Color Remap Safety
+
+**Two changes:**
+
+1. **Pixel-transition analysis in `prepare_for_task`**: For same-sized I/O pairs, analyze pixel-level color transitions. If color A consistently becomes color B (≥70%, ≥2 occurrences), generate `task_recolor_A_to_B` primitive. These are task-specific and composable.
+
+2. **Color remap safety check**: `infer_output_correction` now verifies that remapping a color fixes more pixels than it corrupts. Previously, a remap like `{3→2}` would destroy all correct color-3 pixels to fix a few wrong ones. Also: ambiguous colors are now skipped instead of rejecting the entire remap.
+
+**400-task results:**
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Train solved | 77/400 (19.2%) | 77/400 (19.2%) |
+| Overfit | 8 | 6 (-2) |
+| Eval solved | 15/400 (3.8%) | 15/400 (3.8%) |
+| Near-misses improved | — | 15 tasks |
+| Near-misses worsened | — | 7 tasks |
+
+**Notable improvements:**
+- 0d3d703e: 0.46→0.07 (using `task_recolor_2_to_6`)
+- ea32f347: 0.11→0.03 (safer remap)
+- 63613498: 0.05→0.04 (using `task_recolor_9_to_5`)
+
+**Verdict:** No new solves but overfitting reduced (8→6) and 15 near-misses improved. The task-recolor primitives are being composed effectively. The remaining gap requires spatial (per-region) color assignment, not global remapping.
+
+### Decision 62: Architecture Roadmap — Grammar Evolution
+
+**Current bottleneck:** The 152 near-misses need task-conditioned, spatially-aware color assignment. Global remaps destroy correct pixels. Context-dependent cleanup (Decision 60) doesn't capture task semantics.
+
+**Roadmap for breaking the plateau (in order of expected impact):**
+
+1. **Map-over-objects**: Decompose grid → apply transform per-object → reassemble. The object decomposition infrastructure exists but is underutilized. Many tasks apply the same transform to each object independently but with per-object parameters.
+
+2. **Recursive/iterative application**: Apply a transform until stable (fixed point). Many ARC patterns involve repeated application: fill, propagate, grow.
+
+3. **Parameterized programs**: Programs with fitted constants (e.g., "recolor to the color of the nearest object"). Currently all primitives are zero-parameter. Adding even one fitted parameter (color choice) would dramatically expand expressiveness.
+
+4. **Grammar evolution**: In the long term, the composition rules themselves should evolve. The sleep phase currently promotes sub-trees to primitives, but true grammar evolution means discovering new meta-operations (map, fold, iterate, condition) and adding them to the vocabulary.
+
 ---
 
 *This document will be updated with each new session and major decision.*

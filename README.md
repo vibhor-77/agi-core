@@ -164,15 +164,15 @@ Three modes. Pick one. That's the only knob most users need.
 
 | Mode | Tasks | Beam | Compute Cap | Use case |
 |------|-------|------|-------------|----------|
-| `quick` | 50 | off | none | Fast dev loop (~1 min) |
-| `default` | all (400) | off | none | Full benchmark (~5 min) |
-| `contest` | all (400) | 30×15 | 50M | Maximum accuracy (~30 min) |
+| `quick` | 50 | off | 500K | Fast dev loop (~25s) |
+| `default` | all (400) | off | 3M | Full benchmark (~3 min) |
+| `contest` | all (400) | 30×15 | 100M | Maximum accuracy (~30 min) |
 
 All presets run **1 round** with **seed 42** by default. Results are fully deterministic.
 
 **Why no beam search?** A/B testing on 49 tasks showed beam search (width=20, gens=10) solves **exactly the same tasks** as exhaustive-only, while adding +13% wall time. All solves come from exhaustive enumeration (depth 1-3), object decomposition, conditional search, near-miss refinement, and color fix. Beam is kept in contest mode as a safety net.
 
-**Compute cap** is only relevant for contest mode (beam search). Exhaustive enumeration is self-limiting (~7.5K evals/task), so quick/default need no cap. Override with `--compute-cap`:
+**Compute cap** is cell-normalized (larger grids get proportionally fewer evals). Experiments show solves are **bimodal**: 76 "fast" tasks solve in <500 evals (any cap works), while 9 "slow" tasks (per_object_recolor) need ~13K evals (cap ≥ 2.8M). Quick mode uses 500K for speed; default uses 3M to capture all solves. Override with `--compute-cap`:
 
 ```bash
 python -m experiments.phase1_arc --compute-cap 100M    # override preset cap
@@ -182,8 +182,8 @@ python -m experiments.phase1_arc --compute-cap 100M    # override preset cap
 
 | Mode | Training | Eval (culture transfer) | Wall time |
 |------|----------|------------------------|-----------|
-| `quick` | ~17/50 (~34%) | ~2/50 (~4%) | **~1 min** |
-| `default` | ~100/400 (~25%) | ~33/400 (~8%) | **~5 min** |
+| `quick` | ~17/50 (~34%) | ~2/50 (~4%) | **~25s** |
+| `default` | ~85/400 (~21%) | ~20/400 (~5%) | **~3 min** |
 | `contest` | higher | TBD | ~30 min |
 
 **342 primitives** including grid partitioning, object decomposition, symmetry completion, connected components, diagonal ops, sub-grid propagation, and per-object conditional recoloring.

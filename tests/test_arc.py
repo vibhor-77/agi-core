@@ -1256,6 +1256,39 @@ class TestGrammarDecomposition(unittest.TestCase):
         decomps = self.grammar.decompose(grid, task)
         self.assertEqual(len(decomps), 0)
 
+    def test_grid_partition_decomposition(self):
+        """Grid with separator lines should produce grid_partition strategy."""
+        grid = [
+            [1, 1, 5, 2, 2],
+            [1, 1, 5, 2, 2],
+            [5, 5, 5, 5, 5],
+            [3, 3, 5, 4, 4],
+            [3, 3, 5, 4, 4],
+        ]
+        from core import Task
+        task = Task(task_id="test", train_examples=[(grid, grid)], test_inputs=[grid])
+        decomps = self.grammar.decompose(grid, task)
+        strategies = [d.strategy for d in decomps]
+        self.assertIn("grid_partition", strategies)
+        gp = [d for d in decomps if d.strategy == "grid_partition"][0]
+        self.assertEqual(gp.n_parts, 4)
+
+    def test_grid_partition_recompose(self):
+        """Recompose grid_partition should reproduce the original grid."""
+        grid = [
+            [1, 1, 5, 2, 2],
+            [1, 1, 5, 2, 2],
+            [5, 5, 5, 5, 5],
+            [3, 3, 5, 4, 4],
+            [3, 3, 5, 4, 4],
+        ]
+        from core import Task
+        task = Task(task_id="test", train_examples=[(grid, grid)], test_inputs=[grid])
+        decomps = self.grammar.decompose(grid, task)
+        gp = [d for d in decomps if d.strategy == "grid_partition"][0]
+        result = self.grammar.recompose(gp, gp.parts)
+        self.assertEqual(result, grid)
+
     def test_multicolor_strategy_when_different(self):
         """Multi-color decomposition should appear when 8-conn differs from 4-conn."""
         grid = [
@@ -1273,6 +1306,60 @@ class TestGrammarDecomposition(unittest.TestCase):
         # So multicolor should also appear
         if len(decomps) > 1:
             self.assertIn("multicolor_objects", strategies)
+
+
+class TestFixedPointIteration(unittest.TestCase):
+    """Test apply_until_stable combinator."""
+
+    def test_identity_converges_immediately(self):
+        from domains.arc.primitives import apply_until_stable
+        grid = [[1, 2], [3, 4]]
+        result = apply_until_stable(lambda g: g, grid)
+        self.assertEqual(result, grid)
+
+    def test_fill_propagation(self):
+        """Repeated fill should expand colored regions."""
+        from domains.arc.primitives import apply_until_stable
+
+        # Simple: each step fills one layer of bg-adjacent cells
+        def fill_one_layer(grid):
+            h, w = len(grid), len(grid[0])
+            result = [row[:] for row in grid]
+            for r in range(h):
+                for c in range(w):
+                    if grid[r][c] == 0:
+                        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                            nr, nc = r + dr, c + dc
+                            if 0 <= nr < h and 0 <= nc < w and grid[nr][nc] != 0:
+                                result[r][c] = grid[nr][nc]
+                                break
+            return result
+
+        grid = [
+            [0, 0, 0],
+            [0, 1, 0],
+            [0, 0, 0],
+        ]
+        result = apply_until_stable(fill_one_layer, grid)
+        # After iteration, everything should be filled with 1
+        self.assertTrue(all(c == 1 for row in result for c in row))
+
+    def test_max_iters_respected(self):
+        """Should stop after max_iters even if not converged."""
+        from domains.arc.primitives import apply_until_stable
+        call_count = [0]
+
+        def counter(grid):
+            call_count[0] += 1
+            return [[c + 1 for c in row] for row in grid]  # never converges
+
+        apply_until_stable(counter, [[0]], max_iters=5)
+        self.assertEqual(call_count[0], 5)
+
+    def test_make_fixed_point_fn(self):
+        from domains.arc.primitives import make_fixed_point_fn
+        fn = make_fixed_point_fn(lambda g: g)
+        self.assertEqual(fn([[1]]), [[1]])
 
 
 class TestObjectDecompositionExtended(unittest.TestCase):

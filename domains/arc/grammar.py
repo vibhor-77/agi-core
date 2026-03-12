@@ -12,7 +12,7 @@ from typing import Any
 from core import Grammar, Primitive, Program, Task, Decomposition
 from .primitives import (
     ARC_PRIMITIVES, ARC_PREDICATES, _PRIM_MAP,
-    _make_replace_color,
+    _make_replace_color, _detect_any_separator_lines, _split_grid_cells,
 )
 from .objects import (
     find_foreground_shapes, find_multicolor_objects, place_subgrid,
@@ -332,12 +332,47 @@ class ARCGrammar(Grammar):
                     },
                 ))
 
+        # Strategy 3: Grid partition (separator lines)
+        # Many ARC tasks have a grid divided by separator lines into cells.
+        # Each cell can be independently transformed.
+        try:
+            h_lines, v_lines = _detect_any_separator_lines(grid)
+            if h_lines or v_lines:
+                cells = _split_grid_cells(grid)
+                if cells and len(cells) >= 2:
+                    # Determine separator color and line positions for recompose
+                    sep_color = 0
+                    if h_lines:
+                        sep_color = grid[h_lines[0]][0]
+                    elif v_lines:
+                        sep_color = grid[0][v_lines[0]]
+                    decompositions.append(Decomposition(
+                        strategy="grid_partition",
+                        parts=cells,
+                        context={
+                            "h_lines": h_lines,
+                            "v_lines": v_lines,
+                            "sep_color": sep_color,
+                            "bg_color": bg_color,
+                            "grid_h": h,
+                            "grid_w": w,
+                        },
+                    ))
+        except Exception:
+            pass  # separator detection can fail on unusual grids
+
         return decompositions
 
     def recompose(self, decomposition: Decomposition,
                   transformed_parts: list[Any]) -> Any:
         """Reassemble transformed ARC subgrids back onto a canvas."""
         ctx = decomposition.context
+        strategy = decomposition.strategy
+
+        if strategy == "grid_partition":
+            return self._recompose_grid_partition(ctx, transformed_parts)
+
+        # Default: object-based recomposition
         bg = ctx.get("bg_color", 0)
         h = ctx.get("grid_h", 0)
         w = ctx.get("grid_w", 0)
@@ -350,5 +385,52 @@ class ARCGrammar(Grammar):
         for part, pos in zip(transformed_parts, positions):
             if part is not None:
                 canvas = place_subgrid(canvas, part, pos, transparent_color=bg)
+        return canvas
+
+    def _recompose_grid_partition(self, ctx: dict, parts: list) -> Any:
+        """Reassemble grid cells separated by lines."""
+        h = ctx.get("grid_h", 0)
+        w = ctx.get("grid_w", 0)
+        h_lines = ctx.get("h_lines", [])
+        v_lines = ctx.get("v_lines", [])
+        sep_color = ctx.get("sep_color", 0)
+
+        if not h or not w:
+            return parts[0] if parts else None
+
+        canvas = [[0] * w for _ in range(h)]
+
+        # Fill separator lines
+        for r in h_lines:
+            for c in range(w):
+                if 0 <= r < h:
+                    canvas[r][c] = sep_color
+        for c in v_lines:
+            for r in range(h):
+                if 0 <= c < w:
+                    canvas[r][c] = sep_color
+
+        # Compute cell positions from separator lines
+        row_boundaries = [0] + sorted(h_lines) + [h]
+        col_boundaries = [0] + sorted(v_lines) + [w]
+
+        cell_idx = 0
+        for ri in range(len(row_boundaries) - 1):
+            r_start = row_boundaries[ri]
+            r_end = row_boundaries[ri + 1]
+            if r_start in h_lines:
+                r_start += 1
+            for ci in range(len(col_boundaries) - 1):
+                c_start = col_boundaries[ci]
+                c_end = col_boundaries[ci + 1]
+                if c_start in v_lines:
+                    c_start += 1
+                if cell_idx < len(parts) and parts[cell_idx] is not None:
+                    cell = parts[cell_idx]
+                    for r in range(min(len(cell), r_end - r_start)):
+                        for c in range(min(len(cell[0]) if cell else 0, c_end - c_start)):
+                            canvas[r_start + r][c_start + c] = cell[r][c]
+                cell_idx += 1
+
         return canvas
 

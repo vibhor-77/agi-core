@@ -1352,4 +1352,18 @@ The key relationship: transform primitives operate on object primitives. You can
 
 ---
 
+### Decision 65: Fixed-Point Iteration + Grid Partition Decomposition
+
+**Date:** 2026-03-12
+**Context:** Many ARC tasks need iterated application (fill propagation, pattern growth). Also, tasks with grids divided by separator lines need per-cell decomposition.
+
+**Changes:**
+1. **Fixed-point iteration** (`primitives.py`): `apply_until_stable(fn, grid, max_iters=20)` — applies fn repeatedly until output equals input (convergence). `make_fixed_point_fn` wrapper.
+2. **Phase 1.6 in learner**: For near-miss depth-1 programs, tries `iterate(program)` — applying the program until stable. Checks if iterated version improves over single application.
+3. **Grid partition decomposition** (`grammar.py`): New strategy in `decompose()` — detects separator lines, splits into cells, with `recompose` that reassembles cells with separator lines restored.
+
+**Results:** 110/400 train (27.5%), 93/400 combined (23.2%) — same as Decision 63. The new features are structurally correct (506 tests pass, 10 new) but don't add immediate solves. They target task types (iterative propagation, grid-cell operations) that will compound with future work.
+
+---
+
 *This document will be updated with each new session and major decision.*

@@ -379,6 +379,37 @@ class Learner:
 
         logger.debug(f"  [wake] Phase 1.5 near-miss refine: {time.time()-t_phase:.2f}s")
 
+        # --- Phase 1.6: Fixed-point iteration ---
+        # For near-miss depth-1 programs, try applying them repeatedly until
+        # stable. Many ARC tasks need iterated application (fill propagation,
+        # pattern growth, etc). Cost: O(near_misses × max_iters).
+        t_phase = time.time()
+        if enum_candidates and _budget_ok() and (not best_so_far or best_so_far.prediction_error > cfg.solve_threshold):
+            fp_result = self._try_fixed_point(enum_candidates, task)
+            if fp_result is not None:
+                n_evals += 1
+                self._update_pareto_front(pareto, fp_result)
+                if best_so_far is None or fp_result.energy < best_so_far.energy:
+                    best_so_far = fp_result
+                enum_candidates.append(fp_result)
+
+                if best_so_far and best_so_far.prediction_error <= cfg.solve_threshold:
+                    best_so_far.task_id = task.task_id
+                    _record_solve()
+                    test_error, test_solved = self._evaluate_on_test(best_so_far, task)
+                    front = self._extract_pareto_front(pareto)
+                    wall = time.time() - t0
+                    logger.info(
+                        f"  [wake] Task {task.task_id}: SOLVED by fixed-point iteration, "
+                        f"energy={best_so_far.energy:.6f}, evals={n_evals}, time={wall:.1f}s")
+                    return WakeResult(
+                        task_id=task.task_id, train_solved=True, best=best_so_far,
+                        generations_used=0, evaluations=n_evals, wall_time=wall,
+                        pareto_front=front, dedup_count=0,
+                        test_error=test_error, test_solved=test_solved)
+
+        logger.debug(f"  [wake] Phase 1.6 fixed-point: {time.time()-t_phase:.2f}s")
+
         # --- Phase 1.75: Color fix ---
         # For near-miss programs, try learning a color remapping from
         # pixel-level mismatches. Many ARC tasks differ from target by a
@@ -1339,6 +1370,68 @@ class Learner:
                 best_fix = sp
 
         return best_fix
+
+    def _try_fixed_point(
+        self,
+        candidates: list[ScoredProgram],
+        task: Task,
+        threshold: float = 0.20,
+        max_iters: int = 20,
+    ) -> Optional[ScoredProgram]:
+        """Try applying near-miss programs repeatedly until stable (fixed point).
+
+        Many ARC tasks require iterative application: fill propagation, pattern
+        growth, color spreading. For each near-miss depth-1 program, we apply
+        it repeatedly and check if the converged result matches the expected.
+        """
+        solve_thresh = self.search_cfg.solve_threshold
+        near_misses = [
+            sp for sp in candidates
+            if solve_thresh < sp.prediction_error <= threshold
+            and sp.program.depth == 1  # only single primitives for now
+        ]
+        if not near_misses:
+            return None
+
+        near_misses.sort(key=lambda s: s.prediction_error)
+        near_misses = near_misses[:10]
+
+        best_result: Optional[ScoredProgram] = None
+
+        for nm in near_misses:
+            prim_name = nm.program.root
+
+            # Build a fixed-point version
+            fp_name = f"iterate_{prim_name}"
+
+            def _make_fp(name=prim_name, iters=max_iters):
+                def fp_fn(grid):
+                    current = grid
+                    for _ in range(iters):
+                        result = self.env.execute(Program(root=name), current)
+                        if not isinstance(result, list) or not result:
+                            return current
+                        if result == current:
+                            return current
+                        current = result
+                    return current
+                return fp_fn
+
+            fp_fn = _make_fp()
+            fp_prim = Primitive(name=fp_name, arity=1, fn=fp_fn, domain="")
+            self.env.register_primitive(fp_prim)
+
+            prog = Program(root=fp_name)
+            sp = self._evaluate_program(prog, task)
+
+            if sp.prediction_error <= solve_thresh:
+                return sp
+            if sp.prediction_error < nm.prediction_error:
+                # Fixed-point improved over single application
+                if best_result is None or sp.energy < best_result.energy:
+                    best_result = sp
+
+        return best_result
 
     def _try_grammar_decomposition(
         self,

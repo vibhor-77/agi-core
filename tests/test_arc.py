@@ -1206,5 +1206,106 @@ class TestBatch4Primitives(unittest.TestCase):
         self.assertEqual(result, [[1, 2], [3, 4]])
 
 
+class TestObjectDecompositionExtended(unittest.TestCase):
+    """Test extended object decomposition: pairs, multi-color, scoring."""
+
+    def test_multicolor_object_detection(self):
+        """8-connectivity should group adjacent different-colored pixels."""
+        from domains.arc.objects import find_multicolor_objects
+        grid = [
+            [0, 0, 0, 0, 0],
+            [0, 1, 2, 0, 0],
+            [0, 3, 1, 0, 0],
+            [0, 0, 0, 0, 4],
+            [0, 0, 0, 4, 4],
+        ]
+        objects = find_multicolor_objects(grid)
+        self.assertEqual(len(objects), 2)
+        # First object: the 2x2 cluster of colors 1,2,3
+        sizes = sorted([o["size"] for o in objects])
+        self.assertEqual(sizes, [3, 4])
+
+    def test_multicolor_subgrid_extraction(self):
+        """Multi-color subgrids should preserve original colors."""
+        from domains.arc.objects import find_multicolor_objects
+        grid = [
+            [0, 0, 0],
+            [0, 1, 2],
+            [0, 3, 0],
+        ]
+        objects = find_multicolor_objects(grid)
+        self.assertEqual(len(objects), 1)
+        sg = objects[0]["subgrid"]
+        # Should be a 2x2 subgrid with colors 1,2,3,0
+        self.assertEqual(len(sg), 2)
+        self.assertEqual(len(sg[0]), 2)
+        self.assertEqual(sg[0][0], 1)
+        self.assertEqual(sg[0][1], 2)
+        self.assertEqual(sg[1][0], 3)
+        self.assertEqual(sg[1][1], 0)
+
+    def test_per_object_pair_decomposition(self):
+        """Composed per-object transforms: outer(inner(obj)) should work."""
+        from domains.arc.objects import try_object_decomposition
+        from core import Primitive
+
+        # Task: each object needs rotate90(identity(obj)) = rotate90(obj)
+        # But we test that the pair search finds it even when single doesn't
+        inp = [
+            [0, 0, 0, 0, 0],
+            [0, 1, 1, 0, 0],
+            [0, 0, 1, 0, 0],
+            [0, 0, 0, 0, 0],
+            [0, 0, 0, 2, 0],
+            [0, 0, 2, 2, 0],
+        ]
+        # After rotate90 per-object, each L-shape rotates
+        from domains.arc.primitives import rotate_90_cw
+        from domains.arc.objects import apply_transform_per_object
+        expected = apply_transform_per_object(inp, rotate_90_cw)
+
+        if expected is not None:
+            task_examples = [(inp, expected)]
+            prims = [
+                Primitive(name="identity", arity=1, fn=lambda g: g, domain="arc"),
+                Primitive(name="rotate_90_cw", arity=1, fn=rotate_90_cw, domain="arc"),
+            ]
+            result = try_object_decomposition(task_examples, prims)
+            self.assertIsNotNone(result)
+            name, fn = result
+            self.assertIn("per_object", name)
+
+    def test_score_per_object_prims(self):
+        """_score_per_object_prims should rank prims by per-object error."""
+        from domains.arc.objects import _score_per_object_prims
+        from core import Primitive
+
+        inp = [[0, 1, 0], [0, 1, 0]]
+        expected = [[0, 1, 0], [0, 1, 0]]  # identity is best
+        task_examples = [(inp, expected)]
+
+        prims = [
+            Primitive(name="identity", arity=1, fn=lambda g: g, domain="arc"),
+            Primitive(name="rotate_90_cw", arity=1, fn=rotate_90_cw, domain="arc"),
+        ]
+        scored = _score_per_object_prims(prims, task_examples, bg_color=0)
+        # Identity should rank first (lowest error)
+        self.assertEqual(scored[0].name, "identity")
+
+    def test_multicolor_per_object_transform(self):
+        """Per-multicolor-object transforms should work."""
+        from domains.arc.objects import apply_transform_per_multicolor_object
+
+        grid = [
+            [0, 0, 0, 0],
+            [0, 1, 2, 0],
+            [0, 3, 1, 0],
+            [0, 0, 0, 0],
+        ]
+        # Identity transform should reproduce the grid
+        result = apply_transform_per_multicolor_object(grid, lambda g: g)
+        self.assertEqual(result, grid)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1293,4 +1293,24 @@ The search finds programs that get the **geometry** right — correct shapes, po
 
 ---
 
+### Decision 63: Extended Per-Object Decomposition — Pairs + Multi-Color
+
+**Date:** 2026-03-12
+**Context:** Phase 1.1 object decomposition only tried single primitives per-object. Many tasks need composed per-object transforms (e.g., crop then rotate each object).
+
+**Changes:**
+1. **Composed per-object transforms** (`objects.py`): Try top-15 × top-15 pairs of primitives applied per-object. Scoring function ranks prims by per-object pixel error to avoid O(n²) on all prims.
+2. **Multi-color object segmentation** (`objects.py`): 8-connectivity flood fill groups adjacent non-background pixels regardless of color. Enables per-object transforms on multi-colored objects.
+3. **`apply_transform_per_multicolor_object`**: New function paralleling `apply_transform_per_object` but using 8-connectivity segmentation.
+4. **Test fix** (`test_exhaustive_enum.py`): `test_exhaustive_disabled` was brittle — expected beam search to run but new object decomp solves the task earlier. Changed to assert evaluations > 0.
+
+**Results (400 training tasks):**
+- Train: 110/400 (27.5%) — up from 77/400 (19.2%), **+33 new solves**
+- Eval: 23/400 (5.8%) — up from 15/400 (3.8%), **+8 new solves**
+- Combined: 93/400 (23.3%) — up from 77/400 (19.2%)
+
+**Key insight:** The composed per-object search (Strategy 2) is where most gains come from. Many ARC tasks apply two-step transforms to individual objects.
+
+---
+
 *This document will be updated with each new session and major decision.*

@@ -207,6 +207,13 @@ for item in COMMON_ITEMS:
 class ZorkEnv(Environment):
     """Execute action-sequence programs in a text adventure world."""
 
+    def __init__(self):
+        self._dynamic_prims: dict[str, Primitive] = {}
+
+    def register_primitive(self, primitive: Primitive) -> None:
+        """Register a library-learned primitive so execute() can resolve it."""
+        self._dynamic_prims[primitive.name] = primitive
+
     def load_task(self, task: Task) -> Observation:
         return Observation(data=task.train_examples)
 
@@ -226,7 +233,7 @@ class ZorkEnv(Environment):
                 state = self.execute(child, state)
 
         # Apply this node's action
-        prim = _ZORK_PRIM_MAP.get(program.root)
+        prim = _ZORK_PRIM_MAP.get(program.root) or self._dynamic_prims.get(program.root)
         if prim and prim.fn:
             try:
                 # Library entries have fn=Program (a stored sub-tree).
@@ -377,11 +384,35 @@ class ZorkDrive(DriveSignal):
     """Score progress toward a goal state.
 
     Measures:
-    - Room match (is the player in the right room?)
+    - Room proximity (graph distance to goal room, with partial credit)
     - Inventory match (does the player have the right items?)
     - Score match (game score vs max possible)
     - Flags match (have required actions been performed?)
     """
+
+    @staticmethod
+    def _bfs_distance(rooms: dict[str, Room], src: str, dst: str) -> int:
+        """Shortest path length between two rooms. Returns -1 if unreachable."""
+        if src == dst:
+            return 0
+        visited = {src}
+        frontier = [src]
+        dist = 0
+        while frontier:
+            dist += 1
+            next_frontier = []
+            for room_name in frontier:
+                room = rooms.get(room_name)
+                if room is None:
+                    continue
+                for neighbor in room.exits.values():
+                    if neighbor == dst:
+                        return dist
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        next_frontier.append(neighbor)
+            frontier = next_frontier
+        return -1  # unreachable
 
     def prediction_error(self, predicted: Any, expected: Any) -> float:
         if not isinstance(predicted, GameState) or not isinstance(expected, GameState):
@@ -389,8 +420,17 @@ class ZorkDrive(DriveSignal):
 
         errors = []
 
-        # Room match (0 or 1)
-        room_match = 1.0 if predicted.player_room == expected.player_room else 0.0
+        # Room proximity: partial credit based on graph distance
+        if predicted.player_room == expected.player_room:
+            room_match = 1.0
+        else:
+            dist = self._bfs_distance(
+                predicted.rooms, predicted.player_room, expected.player_room)
+            if dist < 0:
+                room_match = 0.0  # unreachable
+            else:
+                # Closer = higher match. dist=1 → 0.5, dist=2 → 0.33, etc.
+                room_match = 1.0 / (1.0 + dist)
         errors.append(0.40 * (1.0 - room_match))
 
         # Inventory match (Jaccard distance)

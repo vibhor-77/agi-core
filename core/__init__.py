@@ -9,7 +9,6 @@ from .types import (
     Program,
     Observation,
     Task,
-    Decomposition,
     ScoredProgram,
     LibraryEntry,
 )
@@ -55,7 +54,7 @@ from .runner import (
 
 __all__ = [
     # Data types
-    "Primitive", "Program", "Observation", "Task", "Decomposition", "ScoredProgram", "LibraryEntry",
+    "Primitive", "Program", "Observation", "Task", "ScoredProgram", "LibraryEntry",
     # Interfaces
     "Environment", "Grammar", "DriveSignal", "Memory",
     # Config

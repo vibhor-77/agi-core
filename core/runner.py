@@ -497,10 +497,19 @@ def resolve_from_preset(args, preset: dict) -> dict:
     }
 
 
-def run_experiment(cfg: ExperimentConfig) -> str:
+@dataclass
+class ExperimentResult:
+    """Result returned by run_experiment for pipeline chaining."""
+    culture_path: str
+    results_path: str
+    jsonl_path: str
+    results_data: dict  # the full results dict (meta + summary + tasks + library)
+
+
+def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
     """Run a complete wake-sleep experiment on any domain.
 
-    Returns the path to the saved culture file (for pipeline chaining).
+    Returns an ExperimentResult with culture path, results path, and data.
 
     This is the top-level entry point. It:
     1. Sets up output files (log, jsonl, json, metrics, library)
@@ -532,10 +541,12 @@ def run_experiment(cfg: ExperimentConfig) -> str:
         tee = TeeWriter(log_path, sys.stdout)
         sys.stdout = tee
 
+    results_data = {}
     try:
-        _run_experiment(cfg, run_timestamp, log_path, jsonl_path, results_path,
-                        library_path, metrics_json_path, metrics_csv_path,
-                        culture_path)
+        results_data = _run_experiment(cfg, run_timestamp, log_path, jsonl_path,
+                                       results_path, library_path,
+                                       metrics_json_path, metrics_csv_path,
+                                       culture_path)
     except KeyboardInterrupt:
         print("\n\nAborted by user — partial results above.\n")
         raise  # propagate so pipeline mode stops too
@@ -544,7 +555,12 @@ def run_experiment(cfg: ExperimentConfig) -> str:
             sys.stdout = tee._original
             tee.close()
 
-    return culture_path
+    return ExperimentResult(
+        culture_path=culture_path,
+        results_path=results_path,
+        jsonl_path=jsonl_path,
+        results_data=results_data,
+    )
 
 
 def _run_experiment(cfg, run_timestamp, log_path, jsonl_path, results_path,
@@ -899,3 +915,5 @@ def _run_experiment(cfg, run_timestamp, log_path, jsonl_path, results_path,
     print("  Done.")
     hline("═")
     print()
+
+    return results_data

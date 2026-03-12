@@ -16,6 +16,10 @@ Based on the research and principles proposed by [Vibhor Jain](https://github.co
 # Clone and install (NumPy is the only runtime dependency)
 git clone https://github.com/vibhor-77/agi-core.git
 cd agi-core
+
+# Optional: create a virtual environment
+python -m venv .venv && source .venv/bin/activate  # Windows: .venv\Scripts\activate
+
 pip install -r requirements.txt
 
 # Clone the ARC-AGI dataset
@@ -107,6 +111,13 @@ runs/20260311_164939_phase1_train_culture.json — learned culture snapshot (for
 runs/20260311_164939_phase1_train_library.json — learned abstractions (legacy format)
 runs/20260311_164939_phase1_train_metrics.json — compounding curve per round
 runs/20260311_164939_phase1_train_metrics.csv  — same, for spreadsheets
+```
+
+Pipeline mode (default) also saves combined files with a summary printed at the end:
+
+```
+runs/20260311_164939_phase1_pipeline.json      — combined: parameters + train/eval summaries + all tasks
+runs/20260311_164939_phase1_pipeline.jsonl     — all task records (train + eval) with phase tags
 ```
 
 Monitor a running benchmark in another terminal:

@@ -22,8 +22,9 @@ python -m venv .venv && source .venv/bin/activate  # Windows: .venv\Scripts\acti
 
 pip install -r requirements.txt
 
-# Clone the ARC-AGI dataset
+# Clone the ARC-AGI datasets
 git clone https://github.com/fchollet/ARC-AGI.git data/ARC-AGI
+git clone https://github.com/arcprizeorg/ARC-AGI-2.git data/ARC-AGI-2
 
 # Reproduce our results — one command does train + eval with culture transfer
 python -m experiments.phase1_arc
@@ -42,6 +43,7 @@ The default command runs all 400 training tasks, saves the learned culture, then
 git pull origin main
 pip install -r requirements.txt
 git -C data/ARC-AGI pull
+git -C data/ARC-AGI-2 pull
 ```
 
 ## Usage
@@ -84,20 +86,20 @@ python -m experiments.phase1_arc --mode quick --max-tasks 0
 
 **Extrapolation:** If you solve 12/50 tasks (24%) in quick mode, you can expect roughly 96/400 (24%) on the full dataset. The seeded shuffle ensures the subset is unbiased.
 
-### Other demos (no dataset needed)
-
-These demonstrate the **same invariant core algorithm** on different domains:
+### Other experiments
 
 ```bash
-# Symbolic regression — discover mathematical formulas (y=2x+1, y=x², y=sin(x)+x, ...)
-python -m domains.symbolic_math
-
-# ARC with built-in sample tasks (rotate, mirror, crop, gravity, fill, ...)
-python -m experiments.phase1_arc --mode quick
+# ARC-AGI-2 (1000 training + 120 eval tasks, harder than AGI-1)
+python -m experiments.phase2_arc --mode quick
 
 # Zork text adventure — navigate rooms, collect items, unlock doors
-# (run tests to see it in action: pytest tests/test_zork.py -v)
+python -m experiments.zork_baseline --mode quick
+
+# Symbolic regression — discover mathematical formulas (y=2x+1, y=x², y=sin(x)+x, ...)
+python -m domains.symbolic_math
 ```
+
+The Zork domain is fully self-contained (custom game engine, no external dependencies). ARC-AGI-2 requires the dataset clone above.
 
 ### Auto-saved artifacts
 

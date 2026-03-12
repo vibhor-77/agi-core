@@ -1087,6 +1087,22 @@ Worst: 26 primitives appear only in overfit solutions.
 2. **Per-example verification**: Require programs to score below threshold on ALL training examples individually, not just average error. This catches programs that match one example perfectly but fail on others.
 3. **Near-miss refinement**: The 160 near-miss tasks are the highest-ROI targets. Many need slight improvements to existing depth-1/2 programs rather than entirely new primitives.
 
+### Decision 55: Max-Error Blending — Full 400-Task Validation
+
+**Implementation:** `effective_error = max(avg_error, max_error * 0.5)` in `_evaluate_program()`.
+
+**Full 400-task results:**
+
+| Metric | Before (avg error) | After (max-error blend) |
+|--------|-------------------|------------------------|
+| Train solved | 101/400 (25%) | 85/400 (21%) |
+| Train test_solved | 85/400 (21%) | 77/400 (19%) |
+| Train overfit | 16 (16%) | 8 (9%) |
+| Eval test_solved | N/A (no test data) | 15/400 (4%) |
+| Eval overfit | N/A | 1 |
+
+**Verdict:** Overfitting halved (16→8, 16%→9%), but true solves also dropped (85→77). The 0.5 blending coefficient is too aggressive — it rejects some genuinely correct deeper programs. The coefficient needs tuning (probably 0.3 or lower). But the approach is directionally correct and now produces reliable eval numbers (15/400 truly solved with proper test evaluation).
+
 ---
 
 *This document will be updated with each new session and major decision.*

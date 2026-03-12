@@ -1177,6 +1177,81 @@ Worst: 26 primitives appear only in overfit solutions.
 - Tune thresholds to maximize eval scores
 - Cherry-pick eval results
 
+### Decision 59: Near-Miss Deep Analysis — The Primitive Gap is Color-Context
+
+**Methodology:** Analyzed 45 closest near-misses (err < 0.05) on training set by executing the best program found and diffing output vs expected output cell-by-cell. All analysis uses training data only.
+
+**Error type distribution (45 tasks, err < 0.05):**
+
+| Category | Count | Description |
+|----------|-------|-------------|
+| multi_recolor | 32 | 3+ color transitions needed — structure right, colors wrong |
+| color_swap | 6 | Two colors need to be swapped |
+| two_recolors | 4 | Two distinct color changes needed |
+| single_recolor | 3 | One color→color change needed |
+
+**Detailed near-miss patterns (top 10, err < 0.02):**
+
+| Task | Best Program | Wrong Cells | Issue |
+|------|-------------|-------------|-------|
+| 29ec7d0e | draw_diag(complete_diag) | 4/324 (1%) | Wrong colors at diagonal endpoints |
+| ba97ae07 | recolor_minor_cols | 6/169 (4%) | Recolors wrong region (8→3) |
+| e50d258f | extract_smallest(fill_tile) | 1/20 (5%) | Single cell edge case |
+| 7f4411dc | remove_noise | 1/169 (1%) | Removes too much/too little |
+| 0dfd9992 | fill_grid_inters(complete_diag) | 10/441 (2%) | Wrong colors at intersections |
+| 98cf29f8 | mirror_objects_v(mirror_objects_h) | 4/238 (2%) | Artifacts after mirroring |
+| 50846271 | fill_hole_8 | 10/440 (2%) | Fills with wrong color (5 not 8) |
+| a48eeaf7 | move_to_contact | 2/100 (2%) | Shifts wrong object |
+| 776ffc46 | identity | 10/400 (2%) | Needs contextual recoloring |
+| 484b58aa | draw_diag(complete_diag) | 12/841 (1%) | Wrong diagonal colors |
+
+**Key finding: The #1 missing capability is context-dependent color assignment.**
+
+The search finds programs that get the **geometry** right — correct shapes, positions, sizes. But 32/45 closest near-misses have the wrong colors in 1-7% of cells. Current color primitives are hard-coded (`recolor_to_3`, `fill_hole_8`) and can't adapt to the specific color mapping a task requires.
+
+**What the primitives can't do:**
+1. Determine correct color from spatial context (neighbors, region membership)
+2. Learn a color mapping from training examples and apply it
+3. Post-process to fix color artifacts after structural transformations
+
+**Proposed primitive additions (highest ROI):**
+1. **`recolor_by_neighbor_vote`** — set each non-bg cell's color to the majority of its neighbors. Fixes many "artifact cleanup" cases.
+2. **`auto_color_map`** — learns the dominant color mapping from training pairs and applies it. Parameterized primitive.
+3. **`swap_two_colors`** — automatically identifies the two non-bg colors that differ between examples and swaps them. Fixes the 6 color_swap cases.
+4. **`fill_by_surround`** — fill cells based on the color of the surrounding region. Fixes fill_hole cases where the wrong fill color is chosen.
+
+**Estimated impact:** If these 4 primitives convert even 30% of the 45 closest near-misses, that's ~13 new solves → 77→90 training (22.5%), with proportional eval improvement expected.
+
+### Decision 60: Context-Dependent Color Primitives — Negative Result
+
+**Implementation:** 7 new primitives added (349 total):
+- `neighbor_vote_4` / `neighbor_vote_8` — recolor by majority of 4/8-neighbors
+- `swap_top2_colors` / `swap_bottom2_colors` — swap most/least common colors
+- `fill_surround` — flood-fill bg cells from surrounding color
+- `cleanup_isolated` — remove cells with no same-colored neighbor
+- `recolor_min_to_maj` — per-component minority→majority recoloring
+
+**400-task results:**
+
+| Metric | Before (342 prims) | After (349 prims) | With wider search (60/25) |
+|--------|-------------------|--------------------|---------------------------|
+| Truly solved | 77/400 (19.2%) | 77/400 (19.2%) | 76/400 (19.0%) |
+| Overfit | 8 | 7 | 8 |
+
+**Targeted composition test:** Wrapped each of the 30 closest near-misses with each new primitive. Zero improvements. The color errors are task-specific and can't be fixed by generic color cleanup.
+
+**Why the primitives failed:**
+1. **Budget dilution**: 7 new prims add ~280 depth-2 combos and ~3000+ depth-3 combos competing for the same budget. Wider search (60/25 vs 40/15) actually *lost* 1 solve.
+2. **Not in top-K**: New primitives score poorly individually on near-miss tasks (they're cleanup ops, not structural). They don't make the top-40 cut for depth-2 composition.
+3. **Wrong abstraction level**: The color errors are task-specific (e.g., "color region based on position in grid pattern"). Generic neighbor-voting/swapping can't derive the correct mapping from grid structure alone.
+
+**The real bottleneck:** The 152 near-misses need **task-conditioned** color assignment — determining the right color from the training examples themselves, not from grid spatial context. This requires either:
+1. **Parameterized primitives** that fit color mappings from training I/O pairs
+2. **Task-specific primitive generation** (expanding `prepare_for_task`)
+3. **A fundamentally different search approach** for the color-assignment sub-problem
+
+**Decision:** Keep the 7 new primitives (they're useful at depth-0 for 3 tasks, and will compose better as the library grows). But the next breakthrough requires parameterized/learned primitives, not more hand-coded ones.
+
 ---
 
 *This document will be updated with each new session and major decision.*

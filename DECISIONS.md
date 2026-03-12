@@ -1058,6 +1058,35 @@ Credibility requires honesty about what works and what doesn't. The framework's 
 
 *Drive signal fix (binary→distance-based) accounts for 35%→50% improvement.
 
+### Decision 54: Eval Gap Analysis — Root Cause is Overfitting, Not Missing Primitives
+
+**Analysis methodology:** All insights derived from training set data only. Eval set used only for scoring, not for understanding task patterns or tuning the algorithm.
+
+**Training set breakdown (400 tasks):**
+- Truly solved (train+test): 85 (21%)
+- Overfit (train only): 16 (4%)
+- Unsolved: 299 (75%)
+
+**Key finding 1: Depth strongly predicts overfitting.**
+- Truly solved depth distribution: 62% depth-0, 36% depth-1, 1% depth-2
+- Overfit depth distribution: 12% depth-0, 44% depth-1, 25% depth-2, 19% depth-3
+- Deeper programs are 4-5x more likely to overfit. This makes sense: more composition steps = more degrees of freedom = easier to match by coincidence.
+
+**Key finding 2: The eval gap is NOT about missing primitives.**
+The initial hypothesis was that primitives were engineered for training tasks. But the real issue is that programs matching eval training examples don't generalize to eval test examples. The previous eval "33 solved" was likely 0 truly solved (the earlier run didn't compute test_error). A fresh 50-task run confirms: 2/50 eval, 0 overfit.
+
+**Key finding 3: 160 training near-misses exist.**
+160 unsolved training tasks have error < 0.15. These are tasks where the search found *almost* the right answer. Many use `identity` (15 tasks), `complete_diag` compositions, or `fill_hole_*` variants.
+
+**Key finding 4: Primitive generalization rates (training set).**
+Best generalizers (100% gen rate, 2+ uses): `stack_mirror_v` (6), `extend_to_contact` (6), `stack_mirror_h` (5), `color_to_mc` (3), `transpose` (2), `outline` (2), `mirror_v` (2), `repeat_right` (2).
+Worst: 26 primitives appear only in overfit solutions.
+
+**Proposed fixes (train-data-derived, no eval leakage):**
+1. **Occam's razor**: Penalize program depth more aggressively in energy function. Deeper programs need proportionally lower error to be selected.
+2. **Per-example verification**: Require programs to score below threshold on ALL training examples individually, not just average error. This catches programs that match one example perfectly but fail on others.
+3. **Near-miss refinement**: The 160 near-miss tasks are the highest-ROI targets. Many need slight improvements to existing depth-1/2 programs rather than entirely new primitives.
+
 ---
 
 *This document will be updated with each new session and major decision.*

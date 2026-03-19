@@ -167,9 +167,9 @@ Three modes. Pick one. That's the only knob most users need.
 
 Presets differ only in compute budget. All search parameters — rounds, pair/triple pool sizes, beam width — are **auto-derived** from the compute cap via `derive_search_params()`. Higher budget → wider search pools → more solves on a single diminishing-returns curve. CLI flags like `--exhaustive-pair-top-k` override auto-derived values when explicitly set.
 
-All runs use **atomic vocabulary** — 75 primitives (54 atomic transforms + 12 perception + 9 parameterized). Each primitive is one intuitive visual concept. 12 predicates enable conditional branching. Structural search strategies (per-object, cross-reference, procedural, local rules) compose these same primitives in structurally different ways.
+All runs use **atomic vocabulary** — 75 primitives (54 atomic transforms + 12 perception + 9 parameterized). Each primitive is one intuitive visual concept. 12 predicates enable conditional branching. Structural search strategies (per-object, cross-reference, procedural, local rules, synthesis) compose these same primitives in structurally different ways.
 
-Rounds are auto-derived: 2 for budget ≥200K, 3 for ≥20M. Results are fully deterministic with **seed 42** (`PYTHONHASHSEED=0` is enforced automatically).
+Rounds are auto-derived: 2 for budget ≥200K, 3 for ≥3M, 5 for ≥20M. Results are fully deterministic with **seed 42** (`PYTHONHASHSEED=0` is enforced automatically).
 
 **Performance by mode** (measured 2026-03-18):
 
@@ -210,7 +210,7 @@ Quick mode (50 tasks, ~22s): 19/50 (38%) train, 7/50 (14%) eval.
 
 **Depth-3 exhaustive enumeration** with no-op pruning and binary near-miss refinement.
 
-**10 wake phases:** exhaustive enumeration, object decomposition, for-each-object, cross-reference (boolean halves, half-colormap, separator ops, scale/tile, quadrant), local rules (cellular automata + position-modular + ncolors), procedural object DSL (per-object action rules, movement, extraction), conditional search, color fix + cell-wise patch, input-pred correction.
+**11 wake phases:** exhaustive enumeration, object decomposition, for-each-object, cross-reference (boolean halves, half-colormap, separator ops, scale/tile, quadrant), local rules (generic feature search over 21-feature pool), procedural object DSL (per-object action rules, movement, extraction), synthesis (auto-discover transforms from diffs), conditional search, color fix + cell-wise patch, input-pred correction.
 
 **Sleep learning** extracts subtrees from ALL programs (solved + unsolved), quality-weighted by accuracy. Promotes transferable compositions to a bounded library with eviction — reused entries are immune, weak entries displaced by better ones.
 
@@ -224,7 +224,7 @@ Quick mode (50 tasks, ~22s): 19/50 (38%) train, 7/50 (14%) eval.
 | `--mode` | `default` | Preset: `quick`, `default`, or `contest` |
 | `--run-mode` | `pipeline` | `pipeline` (train → eval per round) or `single` (train or eval only) |
 | `--split` | `training` | Data split for single mode: `training` or `evaluation` |
-| `--rounds` | auto | Wake-sleep rounds (auto-derived: 2 for ≥200K, 3 for ≥20M budget) |
+| `--rounds` | auto | Wake-sleep rounds (auto-derived: 2 for ≥200K, 3 for ≥3M, 5 for ≥20M) |
 | `--sequential-compounding` | off | Process tasks sequentially with immediate concept promotion |
 | `--culture` | none | Culture file to load (cross-run knowledge transfer) |
 | `--save-culture` | auto | Override auto culture save path |
@@ -294,19 +294,20 @@ If solve rate increases across rounds without new hand-coded primitives, the fra
 
 ### Current status
 
-**ARC-AGI-1: 109/400 training (27.3%), 46/400 eval (11.5%)** with 75 atomic primitives and 10 wake phases + 12 local rule types. Per-object recolor (10 strategies) contributes ~15% of training solves. Procedural object DSL adds object-level reasoning (fill, movement, extraction). Library entries transfer to eval. Solve criterion uses max-example-error (stricter than avg) so all numbers are genuine all-example solves.
+**ARC-AGI-1: 121/400 training (30.2%), 53/400 eval (13.2%)** with 75 atomic primitives and 11 wake phases. Generic feature search replaces 12 hardcoded rule types with a 21-feature pool. Auto-synthesis discovers transforms from input→output diffs. Procedural object DSL adds object-level reasoning (fill, movement, extraction). Library entries transfer to eval. Solve criterion uses max-example-error (stricter than avg) so all numbers are genuine all-example solves.
 
-**Ten wake phases** compose the same atomic primitives differently:
+**Eleven wake phases** compose the same atomic primitives differently:
 1. **Exhaustive enumeration** — depth 1-3 sequential pipelines + mixed parameterized/transform compositions
 2. **Object decomposition** — per-object transforms, conditional recolor by 10 property strategies
 3. **For-each-object** — apply top-K candidates per connected component
 4. **Cross-reference** — boolean halves, half-colormap (learn pixel-tuple→output mapping from grid halves), separator ops, scale/tile detection, quadrant colormap
-5. **Local rules** — cellular automaton rules (compact, count, raw 3×3, position-modular, ncolors) with LOOCV
+5. **Local rules** — generic feature search over 21-feature pool (Singles → Pairs → Triples → Raw 3×3), LOOCV-validated
 6. **Procedural object DSL** — per-object action rules (fill bbox, extend rays, movement, extraction) learned from pixel diffs
-7. **Conditional search** — if(predicate, A, B) programs using 12 input predicates
-8. **Color fix** — learn color remapping from near-miss program outputs
-9. **Cell-wise patch** — learn fixed pixel corrections for near-miss outputs (<15% difference)
-10. **Input-pred correction** — learn (input_pixel, prediction_pixel) → output_pixel rules with LOOCV
+7. **Synthesis** — auto-discover transforms from input→output diffs (color substitution, directional fill, region fill, symmetry completion, color overlay)
+8. **Conditional search** — if(predicate, A, B) programs using 12 input predicates
+9. **Color fix** — learn color remapping from near-miss program outputs
+10. **Cell-wise patch** — learn fixed pixel corrections for near-miss outputs (<15% difference)
+11. **Input-pred correction** — learn (input_pixel, prediction_pixel) → output_pixel rules with LOOCV
 
 **Three primitive kinds:** transforms (Grid→Grid), perception (Grid→Value), and parameterized ((Value,...) → Grid→Grid factory). All compositions are fully transferable across tasks. **12 predicates** enable conditional branching (if/else programs).
 
@@ -315,7 +316,7 @@ If solve rate increases across rounds without new hand-coded primitives, the fra
 - **Composition depth bottleneck.** Depth-4+ compositions are verified to work manually but can't be found by depth-3 exhaustive search. Compounding across rounds builds up to depth-4+ but saturates quickly.
 - **Overfit gap.** Training 30.2% vs eval 13.2% — some structural strategies (per-object recolor, local rules) learn task-specific rules that don't transfer.
 - **Search space dilution.** Adding primitives that don't solve new tasks is harmful (confirmed: 3 unnecessary prims caused -3 regression). Each new primitive must be pre-tested on unsolved tasks.
-- **Remaining tasks need complex reasoning.** ~295 unsolved training tasks need object-relationship logic, relative positioning, pattern completion, or multi-step conditional operations beyond current template matching.
+- **Remaining tasks need complex reasoning.** ~279 unsolved training tasks need object-relationship logic, relative positioning, pattern completion, or multi-step conditional operations beyond current template matching.
 
 ## Structure
 
@@ -347,6 +348,8 @@ agi-core/
 │   │   ├── primitives.py    # Registry (_PRIM_MAP) + utilities (to_np, from_np)
 │   │   ├── objects.py       # Connected component detection, per-object recolor
 │   │   ├── procedural.py   # Procedural object DSL (fill, movement, extraction)
+│   │   ├── features.py     # Generic pixel feature pool + combinatorial search (21 features)
+│   │   ├── synthesis.py    # Auto-synthesis of primitives from input→output diffs
 │   │   ├── environment.py   # ARCEnv (handles transform, perception, parameterized execution)
 │   │   ├── grammar.py       # ARCGrammar (atomic vocabulary, structural phase gating)
 │   │   ├── drive.py         # ARCDrive
@@ -361,7 +364,7 @@ agi-core/
 │       ├── __init__.py      # Game engine + all 4 interfaces
 │       └── adapter.py       # ZorkAdapter
 │
-├── tests/                   # Test suite (442 tests)
+├── tests/                   # Test suite (452 tests)
 │
 ├── runs/                    # Run artifacts — timestamped, git-ignored
 ├── data/                    # External datasets (git-ignored)
@@ -380,7 +383,7 @@ python -m pytest tests/ -v
 python -m pytest tests/ -v --cov=core --cov=domains --cov-report=term-missing
 ```
 
-**442 tests.** Core modules: learner, memory, config, types 95-100%. Domain: ARC atomic primitives, environment, grammar, drive, procedural DSL. Integration: pipeline, compounding, visualization, batch mode. Auto-derivation: compute budget → search params, rounds, ROI seeding.
+**452 tests.** Core modules: learner, memory, config, types 95-100%. Domain: ARC atomic primitives, environment, grammar, drive, procedural DSL, generic feature search, synthesis. Integration: pipeline, compounding, visualization, batch mode. Auto-derivation: compute budget → search params, rounds, ROI seeding.
 
 ## Documentation
 

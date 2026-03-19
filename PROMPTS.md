@@ -659,4 +659,26 @@ Bulk-restored structural strategies from pre-strip git history. Result: 22→28 
 
 ---
 
+### Prompt 13: From Hand-Engineered to Self-Bootstrapping
+
+> Implement the following plan:
+> # Plan: From Hand-Engineered to Self-Bootstrapping
+> **The Problem:** 97% of the codebase (6,450 lines) is hand-engineered domain knowledge. Each session adds MORE hardcoded rule types — the opposite of the 4-pillars vision. The system is a hand-crafted ARC solver, not a general learning algorithm.
+> **The Fix:** Three phases:
+> - Phase A: Replace 12 hardcoded rule types with 1 generic feature search mechanism using a 21-feature pool
+> - Phase B: Force library compounding — improve sleep with diversity/transfer scoring, increase library size, more rounds
+> - Phase C: Auto-synthesis of primitives from input→output diffs — 5 pattern detectors
+
+**Response:** Implemented all 3 phases in a single session.
+
+**Phase A — Generic Feature Learner:** Created `domains/arc/features.py` with `PixelFeatureContext` (lazy row/col caching), 21-feature pool (neighbor stats, row/col aggregates, position modular, directional neighbors), and `generic_feature_search()` that tries Singles(21) → Pairs(210) → Triples(1330) → Raw 3×3. Deleted ~400 lines of 12 hardcoded `_learn_*/_apply_*` pairs in `environment.py`, replaced with ~40 lines calling the generic search. All old rule types are covered as specific feature combinations. Zero regressions (118/400 maintained).
+
+**Phase B — Library Compounding:** In `core/learner.py` sleep: lowered `min_occurrences` to 1 for solved-sourced subtrees (verified-correct subtrees valuable even appearing once), added transfer scoring (`× log(1 + n_unique_tasks)`), added diversity scoring (`× (0.5 + 0.5 / (1 + n_similar_root))`), added ROI seeding for new library entries. In `core/config.py`: `max_library_size` 50→100, `derive_rounds` updated (2 for ≥200K, 3 for ≥3M, 5 for ≥20M). Library grew 28→39 entries. Compounding curve still flat across rounds (no new solves from library composition yet).
+
+**Phase C — Auto-Synthesis:** Created `domains/arc/synthesis.py` with 5 diff pattern detectors: color substitution (systematic c1→c2), directional fill (extend nonzero pixels), region fill (fill enclosed zeros), symmetry completion (horizontal/vertical/180°), color overlay (recolor A→B). Added `_phase_synthesis` wake phase (7th of 11). +3 new train solves: 2 color substitution (aabf363d, 0d3d703e), 1 vertical symmetry (f25ffba3).
+
+**Final results:** Train 118→121 (+3), Eval 49→53 (+4), 0 regressions. Tests 448→452. Manual rule types 12→0. Lines of manual strategy code ~515→~150.
+
+---
+
 *This document will be updated with each new session.*

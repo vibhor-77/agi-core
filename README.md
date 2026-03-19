@@ -175,10 +175,10 @@ Rounds are auto-derived: 2 for budget ≥200K, 3 for ≥20M. Results are fully d
 
 | Mode | Tasks | Cap | Training | Eval | Wall time |
 |------|-------|-----|----------|------|-----------|
-| quick | 50 | 1M | 14/50 (28%) | 4/50 (8%) | 18s |
-| quick --max-tasks 0 | 400 | 1M | **118/400 (29.5%)** | **49/400 (12.2%)** | ~2 min |
+| quick | 50 | 1M | 19/50 (38%) | 7/50 (14%) | 22s |
+| default | 400 | 3M | **121/400 (30.2%)** | **53/400 (13.2%)** | ~6 min |
 
-Both modes use 2 rounds with culture transfer.
+Default mode uses 3 rounds with culture transfer.
 
 **Compute cap** is cell-normalized (larger grids get proportionally fewer evals). Override with `--compute-cap`:
 
@@ -188,15 +188,15 @@ python -m common --domain arc-agi-1 --compute-cap 100M    # override preset cap
 
 ### Expected performance
 
-**ARC-AGI-1** (measured 2026-03-18):
+**ARC-AGI-1** (measured 2026-03-19):
 
 | Mode | Training (400) | Eval (400) | Library | Overfit | Wall time |
 |------|---------------|------------|---------|---------|-----------|
-| quick --max-tasks 0 | **118/400 (29.5%)** | **49/400 (12.2%)** | ~30 | ~7 / ~2 | ~2 min |
+| default | **121/400 (30.2%)** | **53/400 (13.2%)** | ~39 | ~9 / ~3 | ~6 min |
 
 Solve criterion uses max-example-error (all examples must be solved, not just average) — this is stricter than avg-based, so numbers reflect genuine all-example solves.
 
-Quick mode (50 tasks, ~18s): 14/50 (28%) train, 4/50 (8%) eval.
+Quick mode (50 tasks, ~22s): 19/50 (38%) train, 7/50 (14%) eval.
 
 **Other domains:**
 
@@ -313,7 +313,7 @@ If solve rate increases across rounds without new hand-coded primitives, the fra
 ### Current limitations
 
 - **Composition depth bottleneck.** Depth-4+ compositions are verified to work manually but can't be found by depth-3 exhaustive search. Compounding across rounds builds up to depth-4+ but saturates quickly.
-- **Overfit gap.** Training 29.5% vs eval 12.2% — some structural strategies (per-object recolor, local rules) learn task-specific rules that don't transfer.
+- **Overfit gap.** Training 30.2% vs eval 13.2% — some structural strategies (per-object recolor, local rules) learn task-specific rules that don't transfer.
 - **Search space dilution.** Adding primitives that don't solve new tasks is harmful (confirmed: 3 unnecessary prims caused -3 regression). Each new primitive must be pre-tested on unsolved tasks.
 - **Remaining tasks need complex reasoning.** ~295 unsolved training tasks need object-relationship logic, relative positioning, pattern completion, or multi-step conditional operations beyond current template matching.
 

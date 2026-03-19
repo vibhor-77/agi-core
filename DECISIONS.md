@@ -3469,4 +3469,36 @@ dilutes the search space and causes regressions (confirmed: 3 tiling primitives 
 **Current state:** 118/400 train (29.5%), 49/400 eval (12.2%), 54 atomic primitives, 12 local rule types, 442 tests.
 
 ---
+
+### Decision 39: From Hand-Engineered to Self-Bootstrapping (2026-03-19)
+
+**Problem:** 97% of the codebase was hand-engineered domain knowledge. Each session added MORE hardcoded rule types — the opposite of the 4-pillars vision. The system was a hand-crafted ARC solver, not a general learning algorithm.
+
+**Solution:** Three-phase architectural refactor:
+
+**Phase A — Generic Feature Learner:** Replaced all 12 hardcoded `_learn_*/_apply_*` rule type pairs (~400 lines) with a single generic combinatorial search over a 21-feature pool (~250 lines). The feature pool is the ONE piece of manual input ("what can a pixel observe?"). The search automatically discovers which feature combinations produce consistent rules: Singles → Pairs → Triples → Raw 3×3. All 12 old rule types are covered as specific feature combos. Zero regressions.
+
+**Phase B — Library Compounding Improvements:**
+- Sleep: `min_occurrences=1` for solved-sourced subtrees (verified-correct subtrees are valuable even appearing once)
+- Sleep: Transfer scoring `× log(1 + n_unique_tasks)` — rewards entries spanning diverse tasks
+- Sleep: Diversity scoring `× (0.5 + 0.5/n_similar)` — penalizes structurally redundant entries
+- Sleep: ROI seeding for new library entries (so they get prioritized in pair/triple pools)
+- Config: `max_library_size` 50→100, `derive_rounds` updated for more rounds
+
+**Phase C — Auto-Synthesis from Diffs:** New synthesis engine (`synthesis.py`) analyzes input→output diffs to propose reusable transforms. 5 pattern detectors: color substitution, directional fill, region fill, symmetry completion, color overlay. Each synthesized transform is LOOCV-validated. Added `_phase_synthesis` wake phase. +3 new train solves (2 color_sub, 1 sym_v).
+
+**Results:**
+- Train: 118→121 (+3), Eval: 49→53 (+4), 0 regressions
+- Manual rule types: 12 → 0 (generic search)
+- Lines of manual strategy code: ~515 → ~150
+- Feature discovery: human pre-tests features → system searches feature space
+- Primitive vocabulary: growing via synthesis
+- Library: 28→39 entries (more diverse due to improved scoring)
+- Tests: 448→452
+
+**What didn't work yet:** Library compounding across rounds is still flat (same solves in rounds 1-3). The extracted abstractions aren't composing into novel solutions. Depth=2 with 5 rounds was planned but not tested as a change — kept depth=3 since compounding mechanism isn't yet producing gains.
+
+**Current state:** 121/400 train (30.2%), 53/400 eval (13.2%), 75 primitives, 21 features in pool, 5 synthesis patterns, 452 tests.
+
+---
 *This document will be updated with each new session and major decision.*

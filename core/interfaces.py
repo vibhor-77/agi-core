@@ -173,6 +173,16 @@ class Grammar(ABC):
         examples for constant optimization).  Default: no-op.
         """
 
+    def is_library_eligible(self, prim_name: str) -> bool:
+        """Whether this primitive's subtrees should be considered for library extraction.
+
+        Override in domain grammars to reject task-specific synthetics that
+        won't transfer across tasks.
+
+        Default: all primitives are eligible.
+        """
+        return True
+
     def inject_library(self, entries: list[LibraryEntry]) -> list[Primitive]:
         """
         Convert library entries into primitives usable by the grammar.

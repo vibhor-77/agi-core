@@ -78,6 +78,10 @@ class ARCGrammar(Grammar):
                 comp["size"] for comp in _safe_components(g))) <= 1),
         ]
 
+    def is_library_eligible(self, prim_name: str) -> bool:
+        """Reject domain-phase synthetics (parenthesized names) from library extraction."""
+        return "(" not in prim_name
+
     def essential_pair_concepts(self) -> frozenset[str]:
         from .transformation_primitives import ATOMIC_ESSENTIAL_PAIR_CONCEPTS
         return ATOMIC_ESSENTIAL_PAIR_CONCEPTS

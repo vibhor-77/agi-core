@@ -488,6 +488,8 @@ class Learner:
             subtree = occurrences[0][0]
             min_occ = 1 if key in solved_subtrees else cfg.min_occurrences
             if len(task_ids) >= min_occ and subtree.size >= cfg.min_size:
+                if not self.grammar.is_library_eligible(subtree.root):
+                    continue
                 total_quality = sum(w for _, _, w in occurrences)
                 transfer = math.log(1 + len(task_ids))
                 usefulness = total_quality * math.log(subtree.size + 1) * transfer
@@ -761,7 +763,7 @@ class Learner:
                     if out != inp:
                         is_noop = False
                         break
-                if is_noop:
+                if is_noop and not prim.learned:
                     noop_prims.add(prim.name)
 
         # --- Parameterized prims with perception children ---
@@ -845,13 +847,29 @@ class Learner:
                 pair_pool.append(name)
                 seen_names.add(name)
 
+        # Force-include top learned library entries in pair pool (capped to
+        # avoid consuming too much budget on library compositions)
+        LEARNED_PAIR_CAP = 5
+        learned_added = 0
+        learned_prims_sorted = sorted(
+            [p for p in unary_prims if p.learned and p.name not in seen_names
+             and p.name in prim_by_name],
+            key=lambda p: prim_scores.get(p.name, 0.0), reverse=True)
+        for prim in learned_prims_sorted:
+            if learned_added >= LEARNED_PAIR_CAP:
+                break
+            pair_pool.append(prim.name)
+            seen_names.add(prim.name)
+            learned_added += 1
+
         # Smart pruning for inner steps
         INNER_STEP_THRESHOLD = 0.70
         inner_pool = [
             name for name in pair_pool
             if name not in noop_prims
             and (depth1_scores.get(name, 1.0) <= INNER_STEP_THRESHOLD
-                 or name in essential_names)
+                 or name in essential_names
+                 or prim_by_name.get(name, Primitive("", 0, None)).learned)
         ]
         if len(inner_pool) < pair_top_k // 3:
             inner_pool = [n for n in pair_pool[:pair_top_k // 2]
@@ -947,6 +965,20 @@ class Learner:
                 triple_seen.add(name)
             if len(triple_pool) >= triple_top_k:
                 break
+
+        # Force-include top learned library entries in triple pool (capped)
+        LEARNED_TRIPLE_CAP = 3
+        learned_triple_added = 0
+        learned_triple_sorted = sorted(
+            [p for p in unary_prims if p.learned and p.name not in triple_seen
+             and p.name in prim_by_name],
+            key=lambda p: prim_scores.get(p.name, 0.0), reverse=True)
+        for prim in learned_triple_sorted:
+            if learned_triple_added >= LEARNED_TRIPLE_CAP:
+                break
+            triple_pool.append(prim.name)
+            triple_seen.add(prim.name)
+            learned_triple_added += 1
 
         for a in triple_pool:
             if not _budget_ok():

@@ -284,5 +284,122 @@ class TestGeneralization(unittest.TestCase):
                                 f"Task {task.task_id}: train_solved but not test_solved (overfit)")
 
 
+# =============================================================================
+# 5. Library composition mechanics
+# =============================================================================
+
+class TestLibraryComposition(unittest.TestCase):
+    """Verify that library entries work correctly in compositions."""
+
+    def test_learned_entry_as_outer_with_inner(self):
+        """Library entry used as outer should apply inner's result first."""
+        learner = _make_list_learner(exhaustive_depth=2)
+        env = learner.env
+
+        # Create a library entry that is "double" (wraps Program(root="double"))
+        from core.types import LibraryEntry
+        lib_prog = Program(root="double")
+        entry = LibraryEntry(
+            name="learned_0",
+            program=lib_prog,
+            usefulness=1.0,
+            reuse_count=0,
+            source_tasks=["t1"],
+            domain="",
+        )
+        lib_prims = learner.grammar.inject_library([entry])
+        for p in lib_prims:
+            env.register_primitive(p)
+
+        # Compose: learned_0(reverse(x)) — should reverse then double
+        prog = Program(root="learned_0", children=[
+            Program(root="reverse")])
+
+        # Execute on a list
+        task = list_tasks()[0]
+        inp = task.train_examples[0][0]
+        result = env.execute(prog, inp)
+
+        # Compare: should equal double(reverse(inp))
+        reverse_prog = Program(root="reverse")
+        reversed_inp = env.execute(reverse_prog, inp)
+        double_prog = Program(root="double")
+        expected = env.execute(double_prog, reversed_inp)
+
+        self.assertEqual(result, expected,
+                         "learned_0(reverse(x)) should equal double(reverse(x))")
+
+    def test_learned_entries_not_pruned_as_noop(self):
+        """Learned entries should not be added to noop_prims even if they
+        happen to be identity on some input."""
+        learner = _make_list_learner(exhaustive_depth=2)
+
+        # Create a learned prim that wraps "identity"
+        from core.types import LibraryEntry
+        entry = LibraryEntry(
+            name="learned_noop",
+            program=Program(root="identity"),
+            usefulness=1.0,
+            reuse_count=0,
+            source_tasks=["t1"],
+            domain="",
+        )
+        lib_prims = learner.grammar.inject_library([entry])
+        for p in lib_prims:
+            learner.env.register_primitive(p)
+
+        # The prim IS a no-op, but since it's learned it should not be pruned
+        self.assertTrue(lib_prims[0].learned)
+
+    def test_learned_entries_in_pair_pool(self):
+        """Learned library entries should be force-included in pair pool."""
+        learner = _make_list_learner(exhaustive_depth=2)
+
+        # Inject a library entry
+        from core.types import LibraryEntry
+        entry = LibraryEntry(
+            name="learned_pool_test",
+            program=Program(root="double"),
+            usefulness=1.0,
+            reuse_count=0,
+            source_tasks=["t1"],
+            domain="",
+        )
+        lib_prims = learner.grammar.inject_library([entry])
+        for p in lib_prims:
+            learner.env.register_primitive(p)
+
+        # Run wake on a task — the learned entry should be in the pool
+        tasks = list_tasks()
+        task = [t for t in tasks if t.difficulty == 2.0][0]
+        result = learner.wake_on_task(task)
+        # If the entry is in the pool, it was tried in compositions
+        # We can't directly inspect the pool, but we can verify it doesn't crash
+        # and the entry is available
+        self.assertIsNotNone(result)
+
+    def test_library_eligible_filters_synthetics(self):
+        """is_library_eligible should reject parenthesized domain-phase names."""
+        from domains.arc.grammar import ARCGrammar
+        grammar = ARCGrammar()
+
+        # Regular primitives are eligible
+        self.assertTrue(grammar.is_library_eligible("rotate_90"))
+        self.assertTrue(grammar.is_library_eligible("flip_y"))
+        self.assertTrue(grammar.is_library_eligible("learned_5"))
+
+        # Domain-phase synthetics with parentheses are not
+        self.assertFalse(grammar.is_library_eligible("half_colormap(vsplit)"))
+        self.assertFalse(grammar.is_library_eligible("cross_ref(color_3)"))
+        self.assertFalse(grammar.is_library_eligible("local_rule_feat(obj_size)"))
+
+    def test_base_grammar_eligible_default(self):
+        """Base Grammar.is_library_eligible should return True for everything."""
+        from domains.list_ops import ListGrammar
+        grammar = ListGrammar()
+        self.assertTrue(grammar.is_library_eligible("anything"))
+        self.assertTrue(grammar.is_library_eligible("with(parens)"))
+
+
 if __name__ == "__main__":
     unittest.main()

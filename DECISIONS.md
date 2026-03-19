@@ -3500,5 +3500,58 @@ dilutes the search space and causes regressions (confirmed: 3 tiling primitives 
 
 **Current state:** 121/400 train (30.2%), 53/400 eval (13.2%), 75 primitives, 21 features in pool, 5 synthesis patterns, 452 tests.
 
+## Session 15 — Fix Wake-Sleep Compounding (2026-03-19)
+
+### Decision 109: Fix 4 root causes blocking wake-sleep compounding
+
+**Problem:** Compounding curve completely flat — rounds 1, 2, 3 all produce identical 121/400 train, 53/400 eval. Library grows 36→39 entries but none help solve new tasks.
+
+**Root causes identified and fixed:**
+
+1. **Fix 1: Library entries as outer in compositions** (`domains/arc/environment.py:2035`)
+   - Bug: `_eval_tree` ignored `node.children` when `prim.fn` was a `Program` — `learned_5(crop(x))` skipped `crop(x)` entirely
+   - Fix: Evaluate children first, then apply learned program to the child result
+
+2. **Fix 2A: No-op pruning killed library entries** (`core/learner.py:764`)
+   - Bug: Library entries that happened to be identity on symmetric grids were added to `noop_prims`
+   - Fix: Skip learned primitives in no-op detection (`if is_noop and not prim.learned`)
+
+3. **Fix 2B: Inner pool threshold blocked library entries** (`core/learner.py:850`)
+   - Bug: Inner pool required `depth1_scores <= 0.70`; library entries encode multi-step transforms and score ~1.0 at depth-1
+   - Fix: Exempt learned entries from INNER_STEP_THRESHOLD filter
+
+4. **Fix 3: Library entries excluded from pair/triple pools** (`core/learner.py:838`)
+   - Bug: Pool built by ranking depth-1 error; library entries ranked near bottom
+   - Fix: Force-include top-5 learned entries in pair pool, top-3 in triple pool (sorted by ROI)
+
+5. **Fix 4: Task-specific synthetics polluting library** (`core/interfaces.py`, `domains/arc/grammar.py`, `core/learner.py:490`)
+   - Bug: Sleep extracted subtrees from domain-phase outputs like `half_colormap(vsplit)` — task-specific closures that don't transfer
+   - Fix: Added `Grammar.is_library_eligible()` interface method; ARCGrammar rejects names containing `(` (domain-phase synthetics)
+
+**Tuning decisions:**
+- LEARNED_PAIR_CAP = 5 (unlimited caused 3-task eval regression from budget waste)
+- LEARNED_TRIPLE_CAP = 3
+- Sorted by primitive ROI score (most-reused entries prioritized)
+
+**Results (3 rounds, 400 tasks):**
+
+| Round | Train | Eval | Library |
+|-------|-------|------|---------|
+| 1 | 121/400 (30.2%) | 53/400 (13.2%) | 36 |
+| 2 | **123/400 (30.8%)** | 52/400 (13.0%) | 43 |
+| 3 | 123/400 (30.8%) | 52/400 (13.0%) | 43 |
+
+**First confirmed train compounding: 121 → 123** (+2 tasks solved by library compositions in R2 that R1 couldn't reach). No R1 regression. Tests: 452→457.
+
+**What didn't work:**
+- Unlimited library entries in pools (all entries forced in) caused eval regression 53→50 due to budget consumption
+- R3 plateaued at R2 levels — library didn't grow between R2 and R3 (43 entries both rounds)
+
+**Next steps for further compounding:**
+- Investigate the 2 newly-solved tasks to understand which library compositions unlocked them
+- Try min_occurrences=1 (currently mixed: 1 for solved, 2 for unsolved subtrees)
+- Increase compute budget for later rounds to compensate for larger search space
+- Sweep LEARNED_PAIR_CAP: 3, 5, 8, 10
+
 ---
 *This document will be updated with each new session and major decision.*

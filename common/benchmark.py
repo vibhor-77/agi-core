@@ -36,7 +36,7 @@ from core.config import SearchConfig, SleepConfig, CurriculumConfig
 from core.results import WakeResult
 from core.learner import Learner
 from core.memory import InMemoryStore
-from core.metrics import extract_metrics, print_compounding_table, save_metrics_json, save_metrics_csv
+from common.metrics import extract_metrics, print_compounding_table, save_metrics_json, save_metrics_csv
 
 
 def expand_program(prog, library_map=None) -> str:

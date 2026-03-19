@@ -52,6 +52,11 @@ class ARCEnv(Environment):
         """Register a dynamically created primitive for ARC execution."""
         _PRIM_MAP[primitive.name] = primitive
 
+    def domain_wake_phases(self) -> list:
+        """Return ARC-specific wake phases bound to this environment."""
+        from .phases import arc_wake_phases
+        return arc_wake_phases(self)
+
     # --- Color fix / correction ---
 
     def infer_output_correction(

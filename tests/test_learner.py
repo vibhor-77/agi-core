@@ -1350,11 +1350,17 @@ class TestMaxExampleError(unittest.TestCase):
             complexity_cost=1.0,
             max_example_error=5.0,  # but max is high
         )
-        from core.learner import _WakeContext
+        from core.learner import WakeContext
         from core.config import SearchConfig
         task = Task(task_id="t", train_examples=[(1, 1)], test_inputs=[])
         cfg = SearchConfig()
-        ctx = _WakeContext(task, STUB_PRIMS, cfg, 100, False)
+        env = StubEnv()
+        grammar = StubGrammar()
+        drive = StubDrive()
+        ctx = WakeContext(task, STUB_PRIMS, cfg, 100, False,
+                          env=env, grammar=grammar, drive=drive,
+                          evaluate_fn=lambda p, t: None,
+                          update_pareto_fn=lambda p, s: None)
         ctx.best_so_far = sp
         self.assertFalse(ctx.solved)
 
@@ -1367,11 +1373,17 @@ class TestMaxExampleError(unittest.TestCase):
             complexity_cost=1.0,
             max_example_error=0.0,
         )
-        from core.learner import _WakeContext
+        from core.learner import WakeContext
         from core.config import SearchConfig
         task = Task(task_id="t", train_examples=[(1, 1)], test_inputs=[])
         cfg = SearchConfig()
-        ctx = _WakeContext(task, STUB_PRIMS, cfg, 100, False)
+        env = StubEnv()
+        grammar = StubGrammar()
+        drive = StubDrive()
+        ctx = WakeContext(task, STUB_PRIMS, cfg, 100, False,
+                          env=env, grammar=grammar, drive=drive,
+                          evaluate_fn=lambda p, t: None,
+                          update_pareto_fn=lambda p, s: None)
         ctx.best_so_far = sp
         self.assertTrue(ctx.solved)
 

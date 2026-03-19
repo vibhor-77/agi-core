@@ -68,91 +68,17 @@ class Environment(ABC):
         Default: no-op (environments that don't need dynamic registration).
         """
 
-    def try_object_decomposition(
-        self,
-        task: "Task",
-        primitives: list["Primitive"],
-    ) -> Optional[tuple[str, Any]]:
-        """Try solving a task by applying transforms per-object.
+    def domain_wake_phases(self) -> list:
+        """Return domain-specific wake phases.
 
-        For domains with discrete objects (like ARC grids), this tries
-        applying each primitive to individual objects and reassembling.
+        Each element is a callable: (WakeContext) -> Optional[str].
+        These run after the domain-agnostic exhaustive enumeration phase.
+        If a phase solves the task, it returns a phase name string.
+        Otherwise it returns None and the next phase runs.
 
-        Returns (name, transform_fn) if a pixel-perfect decomposition
-        is found, or None.
-
-        Default: no decomposition (returns None).
+        Default: no domain-specific phases (returns []).
         """
-        return None
-
-    def try_for_each_object(
-        self,
-        task: "Task",
-        candidate_programs: list["ScoredProgram"],
-        top_k: int = 10,
-    ) -> Optional[tuple[str, Any]]:
-        """Try applying top-K candidate programs per-object.
-
-        Unlike try_object_decomposition (which tries individual primitives),
-        this takes already-scored programs (including depth-2+ compositions)
-        and applies each per-object. This enables compositions like
-        for_each_object(mirror_h(crop_to_nonzero)).
-
-        Returns (name, transform_fn) if a pixel-perfect decomposition
-        is found, or None.
-
-        Default: no per-object support (returns None).
-        """
-        return None
-
-    def try_conditional_per_object(
-        self,
-        task: "Task",
-        candidate_programs: list["ScoredProgram"],
-        predicates: list,
-        top_k: int = 8,
-    ) -> Optional[tuple[str, Any]]:
-        """Try per-object conditional transforms: if(pred, A, B) per object.
-
-        Default: not supported (returns None).
-        """
-        return None
-
-    def try_cross_reference(
-        self,
-        task: "Task",
-        primitives: list["Primitive"],
-    ) -> Optional[tuple[str, Any]]:
-        """Try solving a task using cross-reference: one grid part informs another.
-
-        Common ARC patterns:
-        - A small pattern acts as a mask/template for a larger region
-        - Grid divided by separators; one cell is the "key" that transforms others
-        - An object's color/shape determines how another object is modified
-
-        Returns (name, transform_fn) or None.
-
-        Default: no cross-reference support (returns None).
-        """
-        return None
-
-    def infer_output_correction(
-        self,
-        program_outputs: list[Any],
-        expected_outputs: list[Any],
-        **kwargs,
-    ) -> Optional[Program]:
-        """Given a program's outputs and expected outputs, try to infer a
-        simple correction transform (e.g., color remapping for ARC grids).
-
-        Returns a Program node that should be composed on top of the original
-        program, or None if no consistent correction is found.
-
-        Keyword args are domain-specific (e.g., max_rules for ARC).
-
-        Default: no correction (returns None).
-        """
-        return None
+        return []
 
 
 # =============================================================================
@@ -239,16 +165,6 @@ class Grammar(ABC):
         Default: empty (no task-specific priorities).
         """
         return []
-
-    def allow_structural_phases(self) -> bool:
-        """Whether to run structural bypass phases (object decomposition,
-        cross-reference, conditional per-object, grammar decomposition).
-
-        When False (e.g. atomic vocabulary), these phases are skipped so the
-        system must discover structural patterns through composition.
-        Default: True.
-        """
-        return True
 
     def prepare_for_task(self, task: Task) -> None:
         """Called before the wake phase begins on a task.

@@ -38,10 +38,6 @@ class ARCGrammar(Grammar):
         self._task_prims: list[Primitive] = []
         self._vocabulary = vocabulary
 
-    def allow_structural_phases(self) -> bool:
-        """Enable structural search phases (per-object, cross-reference, etc.)."""
-        return True
-
     def get_predicates(self) -> list[tuple[str, callable]]:
         """Return input->bool predicates for conditional search."""
         from collections import Counter

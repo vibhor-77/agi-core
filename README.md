@@ -210,7 +210,7 @@ Quick mode (50 tasks, ~22s): 19/50 (38%) train, 7/50 (14%) eval.
 
 **Depth-3 exhaustive enumeration** with no-op pruning and binary near-miss refinement.
 
-**11 wake phases:** exhaustive enumeration, object decomposition, for-each-object, cross-reference (boolean halves, half-colormap, separator ops, scale/tile, quadrant), local rules (generic feature search over 21-feature pool), procedural object DSL (per-object action rules, movement, extraction), synthesis (auto-discover transforms from diffs), conditional search, color fix + cell-wise patch, input-pred correction.
+**10 wake phases:** 1 domain-agnostic (exhaustive enumeration) + 9 ARC-specific (object decomposition, for-each-object, cross-reference, local rules, procedural, synthesis, conditional search, color fix, input-pred correction). Domain-specific phases are pluggable via `Environment.domain_wake_phases()` — the core never hardcodes them.
 
 **Sleep learning** extracts subtrees from ALL programs (solved + unsolved), quality-weighted by accuracy. Promotes transferable compositions to a bounded library with eviction — reused entries are immune, weak entries displaced by better ones.
 
@@ -271,7 +271,7 @@ Every domain implements exactly 4 things:
 | **DriveSignal** | Score: error + complexity | MSE + node count | -log(similarity) + size | Game score + novelty |
 | **Memory** | Store episodes, library, solutions | InMemoryStore | InMemoryStore | InMemoryStore |
 
-The core loop (`core/learner.py`) depends **only** on these interfaces. It never imports anything domain-specific.
+The core loop (`core/learner.py`) depends **only** on these interfaces. It never imports anything domain-specific. See [`docs/DESIGN.md`](docs/DESIGN.md) for the full architecture document.
 
 ### Terminology
 
@@ -294,20 +294,19 @@ If solve rate increases across rounds without new hand-coded primitives, the fra
 
 ### Current status
 
-**ARC-AGI-1: 121/400 training (30.2%), 53/400 eval (13.2%)** with 75 atomic primitives and 11 wake phases. Generic feature search replaces 12 hardcoded rule types with a 21-feature pool. Auto-synthesis discovers transforms from input→output diffs. Procedural object DSL adds object-level reasoning (fill, movement, extraction). Library entries transfer to eval. Solve criterion uses max-example-error (stricter than avg) so all numbers are genuine all-example solves.
+**ARC-AGI-1: 121/400 training (30.2%), 53/400 eval (13.2%)** with 75 atomic primitives and 10 wake phases (1 core + 9 domain-specific). The core is truly domain-agnostic — all ARC-specific phases live in `domains/arc/phases.py`. Library entries transfer to eval. Solve criterion uses max-example-error (stricter than avg) so all numbers are genuine all-example solves.
 
-**Eleven wake phases** compose the same atomic primitives differently:
-1. **Exhaustive enumeration** — depth 1-3 sequential pipelines + mixed parameterized/transform compositions
+**Ten wake phases** — 1 domain-agnostic + 9 ARC-specific (via `domain_wake_phases()`):
+1. **Exhaustive enumeration** *(core)* — depth 1-3 sequential pipelines + mixed parameterized/transform compositions
 2. **Object decomposition** — per-object transforms, conditional recolor by 10 property strategies
 3. **For-each-object** — apply top-K candidates per connected component
-4. **Cross-reference** — boolean halves, half-colormap (learn pixel-tuple→output mapping from grid halves), separator ops, scale/tile detection, quadrant colormap
+4. **Cross-reference** — boolean halves, half-colormap, separator ops, scale/tile detection, quadrant colormap
 5. **Local rules** — generic feature search over 21-feature pool (Singles → Pairs → Triples → Raw 3×3), LOOCV-validated
 6. **Procedural object DSL** — per-object action rules (fill bbox, extend rays, movement, extraction) learned from pixel diffs
-7. **Synthesis** — auto-discover transforms from input→output diffs (color substitution, directional fill, region fill, symmetry completion, color overlay)
+7. **Synthesis** — auto-discover transforms from input→output diffs
 8. **Conditional search** — if(predicate, A, B) programs using 12 input predicates
 9. **Color fix** — learn color remapping from near-miss program outputs
-10. **Cell-wise patch** — learn fixed pixel corrections for near-miss outputs (<15% difference)
-11. **Input-pred correction** — learn (input_pixel, prediction_pixel) → output_pixel rules with LOOCV
+10. **Input-prediction correction** — pixel-level correction rules (LOOCV-validated) on near-miss predictions
 
 **Three primitive kinds:** transforms (Grid→Grid), perception (Grid→Value), and parameterized ((Value,...) → Grid→Grid factory). All compositions are fully transferable across tasks. **12 predicates** enable conditional branching (if/else programs).
 

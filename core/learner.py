@@ -9,9 +9,7 @@ The loop:
     SLEEP:  analyze solutions → extract sub-programs → compress → add to library
     REPEAT: library grows → search space shrinks → harder problems become tractable
 
-Wake phases: exhaustive enumeration + per-object decomposition +
-cross-reference + color fix. Additional phases added only when
-justified by measured solves on specific tasks.
+Wake phases: exhaustive enumeration (domain-agnostic) + domain-provided phases.
 """
 
 from __future__ import annotations
@@ -23,7 +21,7 @@ import random
 import time
 import multiprocessing as _mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import Optional
+from typing import Any, Optional
 
 from .types import (
     Program,
@@ -49,15 +47,27 @@ logger = logging.getLogger(__name__)
 # Wake context — shared mutable state for the wake phase pipeline
 # =============================================================================
 
-class _WakeContext:
-    """Holds all mutable state shared across wake phases."""
+class WakeContext:
+    """Holds all mutable state shared across wake phases.
+
+    Public interface for domain phases:
+      - ctx.evaluate(program) → ScoredProgram
+      - ctx.update_pareto(sp) → None
+      - ctx.register_primitive(prim) → None
+      - ctx.execute(program, input_data) → Any
+      - ctx.task, ctx.all_prims, ctx.cfg, ctx.enum_candidates, ...
+    """
     __slots__ = (
         "task", "all_prims", "cfg", "eval_budget", "record", "t0",
         "best_so_far", "n_evals", "total_deduped", "gens_used",
         "pareto", "enum_candidates", "beam_scored",
+        # Domain phase support
+        "env", "grammar", "drive",
+        "_evaluate_fn", "_update_pareto_fn",
     )
 
-    def __init__(self, task, all_prims, cfg, eval_budget, record):
+    def __init__(self, task, all_prims, cfg, eval_budget, record,
+                 env, grammar, drive, evaluate_fn, update_pareto_fn):
         self.task: Task = task
         self.all_prims: list[Primitive] = all_prims
         self.cfg: SearchConfig = cfg
@@ -73,6 +83,13 @@ class _WakeContext:
         self.enum_candidates: list[ScoredProgram] = []
         self.beam_scored: list[ScoredProgram] = []
 
+        # Domain phase support
+        self.env: Environment = env
+        self.grammar: Grammar = grammar
+        self.drive: DriveSignal = drive
+        self._evaluate_fn = evaluate_fn
+        self._update_pareto_fn = update_pareto_fn
+
     def budget_ok(self) -> bool:
         return self.eval_budget <= 0 or self.n_evals < self.eval_budget
 
@@ -84,6 +101,22 @@ class _WakeContext:
     def update_best(self, sp: ScoredProgram) -> None:
         if self.best_so_far is None or sp.energy < self.best_so_far.energy:
             self.best_so_far = sp
+
+    def evaluate(self, program: Program) -> ScoredProgram:
+        """Evaluate a program on all training examples."""
+        return self._evaluate_fn(program, self.task)
+
+    def update_pareto(self, sp: ScoredProgram) -> None:
+        """Update the Pareto front with a scored program."""
+        self._update_pareto_fn(self.pareto, sp)
+
+    def register_primitive(self, prim: Primitive) -> None:
+        """Register a dynamically created primitive."""
+        self.env.register_primitive(prim)
+
+    def execute(self, program: Program, input_data: Any) -> Any:
+        """Execute a program on input data."""
+        return self.env.execute(program, input_data)
 
 
 # =============================================================================
@@ -185,7 +218,12 @@ class Learner:
         else:
             eval_budget = 0
 
-        ctx = _WakeContext(task, all_prims, cfg, eval_budget, record)
+        ctx = WakeContext(
+            task, all_prims, cfg, eval_budget, record,
+            env=self.env, grammar=self.grammar, drive=self.drive,
+            evaluate_fn=self._evaluate_program,
+            update_pareto_fn=self._update_pareto_front,
+        )
 
         for phase_fn in self._wake_phases():
             solved_by = phase_fn(ctx)
@@ -195,25 +233,14 @@ class Learner:
         return self._make_unsolved_result(ctx)
 
     def _wake_phases(self):
-        """Return the ordered list of wake phase methods.
+        """Return the ordered list of wake phase callables.
 
-        Each phase takes a _WakeContext and returns a phase name string
-        if the task was solved, or None to continue to the next phase.
+        Phase 1 (exhaustive) is domain-agnostic and always runs.
+        Remaining phases are domain-specific, provided by the environment.
         """
-        return [
-            self._phase_exhaustive,
-            self._phase_object_decomposition,
-            self._phase_for_each_object,
-            self._phase_cross_reference,
-            self._phase_local_rules,
-            self._phase_procedural,
-            self._phase_synthesis,
-            self._phase_conditional_search,
-            self._phase_color_fix,
-            self._phase_input_pred_correction,
-        ]
+        return [self._phase_exhaustive] + self.env.domain_wake_phases()
 
-    def _phase_exhaustive(self, ctx: _WakeContext) -> Optional[str]:
+    def _phase_exhaustive(self, ctx: WakeContext) -> Optional[str]:
         """Phase 1: Exhaustive enumeration of all programs up to depth 3."""
         if ctx.cfg.exhaustive_depth < 1:
             return None
@@ -229,332 +256,11 @@ class Learner:
         logger.debug(f"  [wake] Phase 1 enumeration: {time.time()-t:.2f}s, {ctx.n_evals} evals")
         return "enumeration" if ctx.solved else None
 
-    def _phase_object_decomposition(self, ctx: _WakeContext) -> Optional[str]:
-        """Try per-object transforms via connected components."""
-        if ctx.solved or not self.grammar.allow_structural_phases():
-            return None
-        t = time.time()
-        result = self.env.try_object_decomposition(ctx.task, ctx.all_prims) if ctx.budget_ok() else None
-        if result is not None:
-            name, fn = result
-            sp = self._evaluate_program(Program(root=name), ctx.task)
-            ctx.n_evals += 1
-            self._update_pareto_front(ctx.pareto, sp)
-            ctx.update_best(sp)
-            ctx.enum_candidates.append(sp)
-        logger.debug(f"  [wake] Object decomp: {time.time()-t:.2f}s")
-        return "object decomposition" if ctx.solved else None
-
-    def _phase_for_each_object(self, ctx: _WakeContext) -> Optional[str]:
-        """Apply top-K enumeration candidates per-object."""
-        if ctx.solved or not ctx.enum_candidates or not ctx.budget_ok():
-            return None
-        if not self.grammar.allow_structural_phases():
-            return None
-        t = time.time()
-        result = self.env.try_for_each_object(ctx.task, ctx.enum_candidates, top_k=10)
-        if result is not None:
-            name, fn = result
-            sp = self._evaluate_program(Program(root=name), ctx.task)
-            ctx.n_evals += 1
-            self._update_pareto_front(ctx.pareto, sp)
-            ctx.update_best(sp)
-            ctx.enum_candidates.append(sp)
-        logger.debug(f"  [wake] For-each-object: {time.time()-t:.2f}s")
-        return "for-each-object" if ctx.solved else None
-
-    def _phase_cross_reference(self, ctx: _WakeContext) -> Optional[str]:
-        """Cross-reference: one grid part informs another."""
-        if ctx.solved or not self.grammar.allow_structural_phases():
-            return None
-        t = time.time()
-        result = self.env.try_cross_reference(ctx.task, ctx.all_prims)
-        if result is not None:
-            name, fn = result
-            sp = self._evaluate_program(Program(root=name), ctx.task)
-            ctx.n_evals += 1
-            self._update_pareto_front(ctx.pareto, sp)
-            ctx.update_best(sp)
-            ctx.enum_candidates.append(sp)
-        logger.debug(f"  [wake] Cross-reference: {time.time()-t:.2f}s")
-        return "cross-reference" if ctx.solved else None
-
-    def _phase_local_rules(self, ctx: _WakeContext) -> Optional[str]:
-        """Learn cellular automaton rules from training examples."""
-        if ctx.solved or not self.grammar.allow_structural_phases():
-            return None
-        if not hasattr(self.env, 'try_local_rules'):
-            return None
-        t = time.time()
-        result = self.env.try_local_rules(ctx.task)
-        if result is not None:
-            name, fn = result
-            sp = self._evaluate_program(Program(root=name), ctx.task)
-            ctx.n_evals += 1
-            self._update_pareto_front(ctx.pareto, sp)
-            ctx.update_best(sp)
-            ctx.enum_candidates.append(sp)
-        logger.debug(f"  [wake] Local rules: {time.time()-t:.2f}s")
-        return "local rules" if ctx.solved else None
-
-    def _phase_procedural(self, ctx: _WakeContext) -> Optional[str]:
-        """Learn per-object action rules from pixel diffs."""
-        if ctx.solved or not self.grammar.allow_structural_phases():
-            return None
-        if not hasattr(self.env, 'try_procedural'):
-            return None
-        t = time.time()
-        result = self.env.try_procedural(ctx.task)
-        if result is not None:
-            name, fn = result
-            sp = self._evaluate_program(Program(root=name), ctx.task)
-            ctx.n_evals += 1
-            self._update_pareto_front(ctx.pareto, sp)
-            ctx.update_best(sp)
-            ctx.enum_candidates.append(sp)
-        logger.debug(f"  [wake] Procedural: {time.time()-t:.2f}s")
-        return "procedural" if ctx.solved else None
-
-    def _phase_synthesis(self, ctx: _WakeContext) -> Optional[str]:
-        """Auto-synthesize primitives from input→output diffs."""
-        if ctx.solved or not self.grammar.allow_structural_phases():
-            return None
-        if not hasattr(self.env, 'synthesize_from_diff'):
-            return None
-        t = time.time()
-        results = self.env.synthesize_from_diff(ctx.task)
-        for name, fn in results:
-            sp = self._evaluate_program(Program(root=name), ctx.task)
-            ctx.n_evals += 1
-            self._update_pareto_front(ctx.pareto, sp)
-            ctx.update_best(sp)
-            ctx.enum_candidates.append(sp)
-            if ctx.solved:
-                break
-        logger.debug(f"  [wake] Synthesis: {time.time()-t:.2f}s")
-        return "synthesis" if ctx.solved else None
-
-    def _phase_conditional_search(self, ctx: _WakeContext) -> Optional[str]:
-        """Try if(predicate, A, B) programs."""
-        if not self.grammar.allow_structural_phases():
-            return None
-        predicates = self.grammar.get_predicates()
-        if not predicates or not ctx.enum_candidates or not ctx.budget_ok():
-            return None
-        if ctx.solved:
-            return None
-        t = time.time()
-        result, n_evals = self._try_conditional_search(
-            predicates, ctx.enum_candidates, ctx.all_prims, ctx.task,
-            top_k=10)
-        ctx.n_evals += n_evals
-        if result is not None:
-            self._update_pareto_front(ctx.pareto, result)
-            ctx.update_best(result)
-            ctx.enum_candidates.append(result)
-        logger.debug(f"  [wake] Conditional: {time.time()-t:.2f}s, {n_evals} evals")
-        return "conditional" if ctx.solved else None
-
-    def _phase_color_fix(self, ctx: _WakeContext) -> Optional[str]:
-        """Learn color remapping from near-miss programs."""
-        if ctx.solved or not ctx.enum_candidates:
-            return None
-        t = time.time()
-        result = self._try_color_fix(ctx.enum_candidates, ctx.task)
-        if result is not None:
-            ctx.n_evals += 1
-            self._update_pareto_front(ctx.pareto, result)
-            ctx.update_best(result)
-        logger.debug(f"  [wake] Phase 2 color fix: {time.time()-t:.2f}s")
-        return "color fix" if ctx.solved else None
-
-    def _phase_input_pred_correction(self, ctx: _WakeContext) -> Optional[str]:
-        """Learn pixel-level correction rules on near-miss predictions.
-
-        Tries multiple key strategies:
-        1. (input_pixel, pred_pixel) — original
-        2. (pred_pixel, n_nonzero_4neighbors_in_input) — neighborhood context
-
-        Each is LOOCV-validated to avoid overfitting.
-        """
-        if ctx.solved or not ctx.enum_candidates:
-            return None
-        t = time.time()
-        solve_thresh = self.search_cfg.solve_threshold
-        task = ctx.task
-
-        # Key strategy 1: (input_pixel, pred_pixel)
-        def key_original(inp, pred, r, c):
-            return (inp[r][c], pred[r][c])
-
-        def apply_original(grid, pred, rule):
-            return [[rule.get((grid[r][c], pred[r][c]), pred[r][c])
-                     for c in range(len(pred[0]))] for r in range(len(pred))]
-
-        # Key strategy 2: (pred_pixel, n_nonzero_4neighbors_in_input)
-        def key_nbr_count(inp, pred, r, c):
-            h, w = len(inp), len(inp[0])
-            n_nz = sum(1 for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]
-                       if 0 <= r + dr < h and 0 <= c + dc < w
-                       and inp[r + dr][c + dc] != 0)
-            return (pred[r][c], n_nz)
-
-        def apply_nbr_count(grid, pred, rule):
-            h, w = len(grid), len(grid[0])
-            result = []
-            for r in range(h):
-                row = []
-                for c in range(w):
-                    n_nz = sum(1 for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]
-                               if 0 <= r + dr < h and 0 <= c + dc < w
-                               and grid[r + dr][c + dc] != 0)
-                    row.append(rule.get((pred[r][c], n_nz), pred[r][c]))
-                result.append(row)
-            return result
-
-        key_strategies = [
-            ("input_pred_correct", key_original, apply_original),
-            ("nbr_pred_correct", key_nbr_count, apply_nbr_count),
-        ]
-
-        # Try ALL same-dims candidates (correction only works when dims match)
-        candidates = sorted(ctx.enum_candidates, key=lambda s: s.prediction_error)[:500]
-
-        for nm in candidates:
-            if nm.prediction_error <= solve_thresh:
-                continue
-
-            # Execute program on all training inputs to get predictions
-            preds = []
-            ok = True
-            for inp, expected in task.train_examples:
-                try:
-                    pred = self.env.execute(nm.program, inp)
-                    if (not isinstance(pred, list) or not pred or
-                            len(pred) != len(expected) or len(pred[0]) != len(expected[0]) or
-                            len(inp) != len(expected) or len(inp[0]) != len(expected[0])):
-                        ok = False
-                        break
-                    preds.append((pred, inp, expected))
-                except Exception:
-                    ok = False
-                    break
-            if not ok or len(preds) < 2:
-                continue
-
-            for strat_name, key_fn, apply_fn in key_strategies:
-                # Learn rule
-                rule: dict[tuple, int] = {}
-                consistent = True
-                for pred, inp, expected in preds:
-                    h, w = len(pred), len(pred[0])
-                    for r in range(h):
-                        for c in range(w):
-                            key = key_fn(inp, pred, r, c)
-                            val = expected[r][c]
-                            if key in rule:
-                                if rule[key] != val:
-                                    consistent = False
-                                    break
-                            else:
-                                rule[key] = val
-                        if not consistent:
-                            break
-                    if not consistent:
-                        break
-                if not consistent:
-                    continue
-
-                # Check non-trivial
-                trivial = True
-                for pred, inp, expected in preds:
-                    h, w = len(pred), len(pred[0])
-                    for r in range(h):
-                        for c in range(w):
-                            key = key_fn(inp, pred, r, c)
-                            if rule.get(key, pred[r][c]) != pred[r][c]:
-                                trivial = False
-                                break
-                        if not trivial:
-                            break
-                    if not trivial:
-                        break
-                if trivial:
-                    continue
-
-                # LOOCV
-                loocv_pass = True
-                for hold in range(len(preds)):
-                    sub = [x for i, x in enumerate(preds) if i != hold]
-                    sub_rule: dict[tuple, int] = {}
-                    sub_ok = True
-                    for pred, inp, expected in sub:
-                        h, w = len(pred), len(pred[0])
-                        for r in range(h):
-                            for c in range(w):
-                                key = key_fn(inp, pred, r, c)
-                                if key in sub_rule and sub_rule[key] != expected[r][c]:
-                                    sub_ok = False
-                                    break
-                                sub_rule[key] = expected[r][c]
-                            if not sub_ok:
-                                break
-                        if not sub_ok:
-                            break
-                    if not sub_ok:
-                        loocv_pass = False
-                        break
-                    hp, hi, he = preds[hold]
-                    h, w = len(hp), len(hp[0])
-                    for r in range(h):
-                        for c in range(w):
-                            key = key_fn(hi, hp, r, c)
-                            if sub_rule.get(key, hp[r][c]) != he[r][c]:
-                                loocv_pass = False
-                                break
-                        if not loocv_pass:
-                            break
-                    if not loocv_pass:
-                        break
-
-                if not loocv_pass:
-                    continue
-
-                # Build the corrected program
-                base_prog = nm.program
-                final_rule = dict(rule)
-
-                def _make_correction(bp=base_prog, fr=final_rule,
-                                     env=self.env, afn=apply_fn):
-                    def fn(grid):
-                        pred = env.execute(bp, grid)
-                        if not isinstance(pred, list) or not pred:
-                            return grid
-                        return afn(grid, pred, fr)
-                    return fn
-
-                corr_fn = _make_correction()
-                name = f"{strat_name}({repr(base_prog)[:30]})"
-                prim = Primitive(name=name, arity=0, fn=corr_fn, domain="arc")
-                self.env.register_primitive(prim)
-                sp = self._evaluate_program(Program(root=name), task)
-                ctx.n_evals += 1
-                self._update_pareto_front(ctx.pareto, sp)
-                ctx.update_best(sp)
-                ctx.enum_candidates.append(sp)
-                if sp.prediction_error <= solve_thresh:
-                    logger.debug(f"  [wake] Input-pred correction ({strat_name}): "
-                                 f"{time.time()-t:.2f}s SOLVED")
-                    return "input-pred correction"
-
-        logger.debug(f"  [wake] Input-pred correction: {time.time()-t:.2f}s")
-        return "input-pred correction" if ctx.solved else None
-
     # -------------------------------------------------------------------------
     # Wake result builders
     # -------------------------------------------------------------------------
 
-    def _make_solved_result(self, ctx: _WakeContext, phase_name: str) -> WakeResult:
+    def _make_solved_result(self, ctx: WakeContext, phase_name: str) -> WakeResult:
         """Build WakeResult for a training-solved task."""
         top_sp, te, ts, n_perf, s_rank, tss = self._evaluate_top_k_on_test(
             ctx.enum_candidates, ctx.task, top_k=10)
@@ -580,7 +286,7 @@ class Learner:
             n_train_perfect=n_perf, solving_rank=s_rank,
             train_predictions=train_preds, test_predictions=test_preds)
 
-    def _make_unsolved_result(self, ctx: _WakeContext) -> WakeResult:
+    def _make_unsolved_result(self, ctx: WakeContext) -> WakeResult:
         """Build WakeResult for an unsolved task."""
         if ctx.best_so_far:
             ctx.best_so_far = self._try_simplify(ctx.best_so_far, ctx.task)
@@ -612,7 +318,7 @@ class Learner:
             return sp
         return self._evaluate_program(simplified, task)
 
-    def _record_solve(self, ctx: _WakeContext) -> None:
+    def _record_solve(self, ctx: WakeContext) -> None:
         """Record solution in memory if record=True."""
         if ctx.record and ctx.best_so_far:
             self.memory.record_episode(
@@ -776,8 +482,6 @@ class Learner:
                 subtree_counts[key].append((subtree, task_id, quality))
 
         # Filter and score
-        # Solved-sourced subtrees need only 1 occurrence (verified-correct);
-        # unsolved-sourced subtrees require min_occurrences to reduce noise.
         candidates = []
         for key, occurrences in subtree_counts.items():
             task_ids = sorted(set(tid for _, tid, _ in occurrences))
@@ -785,7 +489,6 @@ class Learner:
             min_occ = 1 if key in solved_subtrees else cfg.min_occurrences
             if len(task_ids) >= min_occ and subtree.size >= cfg.min_size:
                 total_quality = sum(w for _, _, w in occurrences)
-                # Transfer bonus: reward entries spanning diverse tasks
                 transfer = math.log(1 + len(task_ids))
                 usefulness = total_quality * math.log(subtree.size + 1) * transfer
                 candidates.append((subtree, task_ids, usefulness))
@@ -798,7 +501,6 @@ class Learner:
         for subtree, task_ids, usefulness in candidates:
             if repr(subtree) in existing_reprs:
                 continue
-            # Diversity scoring: penalize structurally similar entries
             all_roots = existing_roots + [e.program.root for e in new_entries]
             n_similar = sum(1 for r in all_roots if r == subtree.root)
             diversity = 1.0 / (1.0 + n_similar)
@@ -821,8 +523,6 @@ class Learner:
         for entry in new_entries:
             if self.memory.add_to_library(entry):
                 accepted.append(entry)
-                # Seed primitive score so the entry gets prioritized
-                # in future pair/triple pool ranking
                 self.memory.update_primitive_score(
                     entry.name, entry.usefulness * 0.1)
 
@@ -1145,7 +845,7 @@ class Learner:
                 pair_pool.append(name)
                 seen_names.add(name)
 
-        # Smart pruning for inner steps — essential primitives always included
+        # Smart pruning for inner steps
         INNER_STEP_THRESHOLD = 0.70
         inner_pool = [
             name for name in pair_pool
@@ -1167,7 +867,7 @@ class Learner:
                 if not _budget_ok():
                     break
                 if inner_name in noop_prims:
-                    continue  # outer(identity(x)) = outer(x), already tested
+                    continue
                 prog = Program(root=outer_name, children=[
                     Program(root=inner_name)])
                 sp = self._evaluate_program(prog, task)
@@ -1275,228 +975,6 @@ class Learner:
                         return scored, n_evals
 
         return scored, n_evals
-
-    # -------------------------------------------------------------------------
-    # Color fix
-    # -------------------------------------------------------------------------
-
-    def _try_color_fix(
-        self,
-        candidates: list[ScoredProgram],
-        task: Task,
-        threshold: float = 0.30,
-    ) -> Optional[ScoredProgram]:
-        """Try to fix near-miss programs by learning a color correction."""
-        solve_thresh = self.search_cfg.solve_threshold
-        near_misses = [
-            sp for sp in candidates
-            if solve_thresh < sp.prediction_error <= threshold
-        ]
-        if not near_misses:
-            return None
-
-        near_misses.sort(key=lambda s: s.prediction_error)
-        near_misses = near_misses[:20]
-
-        best_fix: Optional[ScoredProgram] = None
-
-        # Try correction(identity)
-        identity_outputs = [inp for inp, _ in task.train_examples]
-        identity_expected = [exp for _, exp in task.train_examples]
-        correction = self.env.infer_output_correction(
-            identity_outputs, identity_expected)
-        if correction is not None:
-            sp = self._evaluate_program(correction, task)
-            if sp.prediction_error <= solve_thresh:
-                return sp
-            if best_fix is None or sp.energy < best_fix.energy:
-                best_fix = sp
-
-        for nm in near_misses:
-            outputs = []
-            expected = []
-            ok = True
-            for inp, exp in task.train_examples:
-                try:
-                    out = self.env.execute(nm.program, inp)
-                    outputs.append(out)
-                    expected.append(exp)
-                except Exception:
-                    ok = False
-                    break
-            if not ok:
-                continue
-
-            correction = self.env.infer_output_correction(outputs, expected)
-            if correction is None:
-                continue
-
-            base = nm.program
-            if base.root == "identity" and not base.children:
-                fixed_prog = correction
-            else:
-                fixed_prog = Program(
-                    root=correction.root,
-                    children=[copy.deepcopy(base)],
-                    params=correction.params,
-                )
-            sp = self._evaluate_program(fixed_prog, task)
-
-            if sp.prediction_error >= nm.prediction_error:
-                continue
-
-            if sp.prediction_error <= solve_thresh:
-                return sp
-            if best_fix is None or sp.energy < best_fix.energy:
-                best_fix = sp
-
-        return best_fix
-
-    # -------------------------------------------------------------------------
-    # Conditional search
-    # -------------------------------------------------------------------------
-
-    def _try_conditional_search(
-        self,
-        predicates: list[tuple[str, callable]],
-        candidates: list[ScoredProgram],
-        primitives: list[Primitive],
-        task: Task,
-        top_k: int = 15,
-    ) -> tuple[Optional[ScoredProgram], int]:
-        """Search for if(pred, A, B) programs.
-
-        For each predicate that non-trivially splits the training examples,
-        score top-K primitives on each group, then try best 5x5 combinations.
-        """
-        n_evals = 0
-        solve_thresh = self.search_cfg.solve_threshold
-        t_start = time.time()
-
-        # Build candidate pool from top depth-1 programs
-        depth1 = sorted(
-            [sp for sp in candidates if sp.program.depth == 1],
-            key=lambda s: s.prediction_error)
-        prim_map = {p.name: p for p in primitives}
-        seen = set()
-        top_prims = []
-        for sp in depth1:
-            if sp.program.root not in seen and sp.program.root in prim_map:
-                top_prims.append(prim_map[sp.program.root])
-                seen.add(sp.program.root)
-            if len(top_prims) >= top_k:
-                break
-
-        if len(top_prims) < 2:
-            return None, 0
-
-        best_result: Optional[ScoredProgram] = None
-
-        # Pre-cache all prim outputs ONCE (the expensive part)
-        prim_cache: dict[str, tuple] = {}  # name -> (prim, [(out, exp), ...])
-        for prim in top_prims:
-            if time.time() - t_start > 0.3:
-                break
-            outputs = []
-            ok = True
-            for inp, exp in task.train_examples:
-                try:
-                    out = prim.fn(inp)
-                    # Validate: must be a 2D grid
-                    if not isinstance(out, list) or not out or not isinstance(out[0], list):
-                        ok = False
-                        break
-                    outputs.append((out, exp))
-                except Exception:
-                    ok = False
-                    break
-            if ok:
-                prim_cache[prim.name] = (prim, outputs)
-
-        if len(prim_cache) < 2:
-            return None, 0
-
-        for pred_name, pred_fn in predicates:
-            if time.time() - t_start > 0.5:
-                break
-
-            true_idx, false_idx = [], []
-            for idx, (inp, _) in enumerate(task.train_examples):
-                try:
-                    (true_idx if pred_fn(inp) else false_idx).append(idx)
-                except Exception:
-                    false_idx.append(idx)
-
-            if not true_idx or not false_idx:
-                continue
-
-            true_scores = []
-            false_scores = []
-            for name, (prim, outputs) in prim_cache.items():
-                te = sum(self.drive.prediction_error(outputs[i][0], outputs[i][1])
-                         for i in true_idx) / len(true_idx)
-                fe = sum(self.drive.prediction_error(outputs[i][0], outputs[i][1])
-                         for i in false_idx) / len(false_idx)
-                true_scores.append((te, prim))
-                false_scores.append((fe, prim))
-
-            true_scores.sort(key=lambda x: x[0])
-            false_scores.sort(key=lambda x: x[0])
-
-            for then_p in [p for _, p in true_scores[:5]]:
-                for else_p in [p for _, p in false_scores[:5]]:
-                    if then_p.name == else_p.name:
-                        continue
-
-                    # Evaluate without registering (avoids multiprocessing pickling issues)
-                    cond_name = f"if_{pred_name}_{then_p.name}_else_{else_p.name}"
-                    total_error = 0.0
-                    max_err = 0.0
-                    all_ok = True
-                    solve_score = 0
-                    for inp, expected in task.train_examples:
-                        try:
-                            pred = then_p.fn(inp) if pred_fn(inp) else else_p.fn(inp)
-                        except Exception:
-                            pred = inp
-                        err = self.drive.prediction_error(pred, expected)
-                        total_error += err
-                        max_err = max(max_err, err)
-                        if err <= solve_thresh:
-                            solve_score += 1
-                    n_ex = len(task.train_examples)
-                    avg_error = total_error / n_ex if n_ex else 1.0
-                    if avg_error <= solve_thresh:
-                        # Register only if it actually solves
-                        def _make(pf, tf, ef):
-                            def fn(g):
-                                try:
-                                    return tf(g) if pf(g) else ef(g)
-                                except Exception:
-                                    return g
-                            return fn
-                        cond_fn = _make(pred_fn, then_p.fn, else_p.fn)
-                        cond_prim = Primitive(
-                            name=cond_name, arity=0, fn=cond_fn, domain="arc")
-                        self.env.register_primitive(cond_prim)
-                        sp = self._evaluate_program(Program(root=cond_name), task)
-                        n_evals += 1
-                        return sp, n_evals
-                    complexity = 0.003  # 3 nodes
-                    energy = avg_error + self.search_cfg.energy_beta * complexity
-                    sp = ScoredProgram(
-                        program=Program(root=cond_name),
-                        energy=energy,
-                        prediction_error=avg_error,
-                        complexity_cost=complexity,
-                        max_example_error=max_err,
-                        example_solve_score=(solve_score / n_ex) ** 2 if n_ex else 0,
-                    )
-                    n_evals += 1
-                    if best_result is None or sp.energy < best_result.energy:
-                        best_result = sp
-
-        return best_result, n_evals
 
     # -------------------------------------------------------------------------
     # Private helpers

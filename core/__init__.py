@@ -32,7 +32,7 @@ from .results import (
     RoundResult,
 )
 from .transition_matrix import TransitionMatrix
-from .learner import Learner
+from .learner import Learner, WakeContext
 from .memory import InMemoryStore
 from .metrics import (
     CompoundingMetrics,
@@ -54,7 +54,7 @@ __all__ = [
     # Transition matrix
     "TransitionMatrix",
     # Learner
-    "Learner",
+    "Learner", "WakeContext",
     # Memory
     "InMemoryStore",
     # Metrics

@@ -1054,34 +1054,6 @@ def tile_both(grid: Grid) -> Grid:
     return top + [row[:] for row in top]
 
 
-def scale_up_2x(grid: Grid) -> Grid:
-    """Scale grid 2x: each pixel becomes a 2x2 block."""
-    if not grid or not grid[0]:
-        return grid
-    result = []
-    for row in grid:
-        new_row = []
-        for v in row:
-            new_row.extend([v, v])
-        result.append(new_row)
-        result.append(new_row[:])
-    return result
-
-
-def scale_up_3x(grid: Grid) -> Grid:
-    """Scale grid 3x: each pixel becomes a 3x3 block."""
-    if not grid or not grid[0]:
-        return grid
-    result = []
-    for row in grid:
-        new_row = []
-        for v in row:
-            new_row.extend([v, v, v])
-        for _ in range(3):
-            result.append(new_row[:])
-    return result
-
-
 def densest_subgrid(grid: Grid) -> Grid:
     """Extract the densest rectangular subgrid.
 

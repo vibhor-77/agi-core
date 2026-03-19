@@ -50,10 +50,14 @@ def derive_search_params(eval_budget: int, n_prims: int = 48) -> dict:
 def derive_rounds(compute_cap: int) -> int:
     """Auto-derive rounds from compute budget.
 
+    More rounds enable library compounding: each round's extracted
+    abstractions extend the effective search depth of subsequent rounds.
     Round 2 gives +50% solves (huge ROI, always worth it).
-    Round 3 gives +15% solves (only worth it at high budget).
+    Round 3+ gives diminishing but still meaningful returns.
     """
     if compute_cap >= 20_000_000:
+        return 5
+    if compute_cap >= 3_000_000:
         return 3
     if compute_cap >= 200_000:
         return 2
@@ -110,7 +114,7 @@ class SleepConfig:
     """Knobs for the sleep/consolidation phase."""
     min_occurrences: int = 2      # sub-tree must appear in >= N programs
     min_size: int = 2             # sub-tree must have >= N nodes
-    max_library_size: int = 50    # cap on total library entries
+    max_library_size: int = 100   # cap on total library entries
     usefulness_decay: float = 0.90  # decay old entries each sleep cycle
     reuse_bonus: float = 2.0       # scoring bonus per reuse for eviction ranking
     unsolved_weight: float = 0.10  # quality discount for unsolved vs solved programs

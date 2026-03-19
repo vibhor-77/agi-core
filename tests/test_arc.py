@@ -193,5 +193,265 @@ class TestVocabulary(unittest.TestCase):
         self.assertEqual(result, grid)
 
 
+class TestGenericFeatureSearch(unittest.TestCase):
+    """Regression tests for the generic pixel feature search.
+
+    Uses larger grids (5×5+) and 3+ examples to ensure LOOCV can
+    generalize (edge/corner pixels create unique keys in small grids).
+    """
+
+    def test_color_swap(self):
+        """Center-only rule: search finds it via any single feature."""
+        from domains.arc.features import generic_feature_search
+
+        # Simple color swap: 1→2, 2→1, 0→0
+        inp1 = [[1, 1, 0, 2, 2],
+                 [1, 0, 0, 0, 2],
+                 [0, 0, 0, 0, 0],
+                 [2, 0, 0, 0, 1],
+                 [2, 2, 0, 1, 1]]
+        out1 = [[2, 2, 0, 1, 1],
+                 [2, 0, 0, 0, 1],
+                 [0, 0, 0, 0, 0],
+                 [1, 0, 0, 0, 2],
+                 [1, 1, 0, 2, 2]]
+
+        inp2 = [[0, 1, 0, 2, 0],
+                 [1, 1, 0, 2, 2],
+                 [0, 0, 0, 0, 0],
+                 [2, 2, 0, 1, 1],
+                 [0, 2, 0, 1, 0]]
+        out2 = [[0, 2, 0, 1, 0],
+                 [2, 2, 0, 1, 1],
+                 [0, 0, 0, 0, 0],
+                 [1, 1, 0, 2, 2],
+                 [0, 1, 0, 2, 0]]
+
+        inp3 = [[1, 0, 2, 0, 1],
+                 [0, 1, 2, 1, 0],
+                 [2, 2, 0, 2, 2],
+                 [0, 1, 2, 1, 0],
+                 [1, 0, 2, 0, 1]]
+        out3 = [[2, 0, 1, 0, 2],
+                 [0, 2, 1, 2, 0],
+                 [1, 1, 0, 1, 1],
+                 [0, 2, 1, 2, 0],
+                 [2, 0, 1, 0, 2]]
+
+        result = generic_feature_search(
+            [(inp1, out1), (inp2, out2), (inp3, out3)])
+        self.assertIsNotNone(result, "Should find center-only color swap")
+        name, fn, rule = result
+        self.assertEqual(fn(inp1), out1)
+        self.assertEqual(fn(inp3), out3)
+
+    def test_checkerboard_pos_mod(self):
+        """Position-modular rule: (center, r%2, c%2) → output."""
+        from domains.arc.features import generic_feature_search
+
+        inp1 = [[0, 0, 0, 0],
+                 [0, 0, 0, 0],
+                 [0, 0, 0, 0],
+                 [0, 0, 0, 0]]
+        out1 = [[1, 0, 1, 0],
+                 [0, 0, 0, 0],
+                 [1, 0, 1, 0],
+                 [0, 0, 0, 0]]
+
+        inp2 = [[0, 0, 0, 0, 0, 0],
+                 [0, 0, 0, 0, 0, 0],
+                 [0, 0, 0, 0, 0, 0],
+                 [0, 0, 0, 0, 0, 0]]
+        out2 = [[1, 0, 1, 0, 1, 0],
+                 [0, 0, 0, 0, 0, 0],
+                 [1, 0, 1, 0, 1, 0],
+                 [0, 0, 0, 0, 0, 0]]
+
+        result = generic_feature_search([(inp1, out1), (inp2, out2)])
+        self.assertIsNotNone(result)
+        name, fn, rule = result
+        self.assertEqual(fn(inp1), out1)
+        self.assertEqual(fn(inp2), out2)
+
+    def test_block_interior_fill(self):
+        """Rule needing neighbor info: interior 1-pixels (n_nz_4=4) → 5."""
+        from domains.arc.features import generic_feature_search
+
+        # 5x5 solid block, interior → 5
+        inp1 = [[1, 1, 1, 1, 1],
+                 [1, 1, 1, 1, 1],
+                 [1, 1, 1, 1, 1],
+                 [1, 1, 1, 1, 1],
+                 [1, 1, 1, 1, 1]]
+        out1 = [[1, 1, 1, 1, 1],
+                 [1, 5, 5, 5, 1],
+                 [1, 5, 5, 5, 1],
+                 [1, 5, 5, 5, 1],
+                 [1, 1, 1, 1, 1]]
+
+        inp2 = [[1, 1, 1, 1, 1, 1, 1],
+                 [1, 1, 1, 1, 1, 1, 1],
+                 [1, 1, 1, 1, 1, 1, 1],
+                 [1, 1, 1, 1, 1, 1, 1],
+                 [1, 1, 1, 1, 1, 1, 1]]
+        out2 = [[1, 1, 1, 1, 1, 1, 1],
+                 [1, 5, 5, 5, 5, 5, 1],
+                 [1, 5, 5, 5, 5, 5, 1],
+                 [1, 5, 5, 5, 5, 5, 1],
+                 [1, 1, 1, 1, 1, 1, 1]]
+
+        inp3 = [[1, 1, 1, 1],
+                 [1, 1, 1, 1],
+                 [1, 1, 1, 1],
+                 [1, 1, 1, 1]]
+        out3 = [[1, 1, 1, 1],
+                 [1, 5, 5, 1],
+                 [1, 5, 5, 1],
+                 [1, 1, 1, 1]]
+
+        result = generic_feature_search(
+            [(inp1, out1), (inp2, out2), (inp3, out3)])
+        self.assertIsNotNone(result, "Should find n_nz_4-based rule")
+        name, fn, rule = result
+        self.assertEqual(fn(inp1), out1)
+        self.assertEqual(fn(inp3), out3)
+
+    def test_raw3x3_fallback(self):
+        """Raw 3x3 rule: identical grids as both examples."""
+        from domains.arc.features import generic_feature_search
+
+        inp = [[1, 2, 1],
+               [2, 0, 2],
+               [1, 2, 1]]
+        out = [[1, 2, 1],
+               [2, 5, 2],
+               [1, 2, 1]]
+
+        result = generic_feature_search([(inp, out), (inp, out)])
+        self.assertIsNotNone(result)
+        name, fn, rule = result
+        self.assertEqual(fn(inp), out)
+
+    def test_composed_search_no_crash(self):
+        """Composed search: verify API works without crashing."""
+        from domains.arc.features import generic_feature_search_composed
+
+        inp = [[1, 1, 1], [1, 0, 1], [1, 1, 1]]
+        out = [[1, 1, 1], [1, 1, 1], [1, 1, 1]]
+        # May or may not find a rule — just verify no exception
+        generic_feature_search_composed([(inp, out), (inp, out)])
+
+    def test_try_local_rules_integration(self):
+        """Integration: try_local_rules on ARCEnv uses generic search."""
+        env = ARCEnv()
+        # Solid block → interior fill
+        inp1 = [[1, 1, 1, 1, 1],
+                 [1, 1, 1, 1, 1],
+                 [1, 1, 1, 1, 1],
+                 [1, 1, 1, 1, 1],
+                 [1, 1, 1, 1, 1]]
+        out1 = [[1, 1, 1, 1, 1],
+                 [1, 5, 5, 5, 1],
+                 [1, 5, 5, 5, 1],
+                 [1, 5, 5, 5, 1],
+                 [1, 1, 1, 1, 1]]
+
+        inp2 = [[1, 1, 1, 1],
+                 [1, 1, 1, 1],
+                 [1, 1, 1, 1],
+                 [1, 1, 1, 1]]
+        out2 = [[1, 1, 1, 1],
+                 [1, 5, 5, 1],
+                 [1, 5, 5, 1],
+                 [1, 1, 1, 1]]
+
+        task = Task(
+            task_id="interior_fill",
+            train_examples=[(inp1, out1), (inp2, out2)],
+            test_inputs=[inp1],
+            test_outputs=[out1],
+        )
+        result = env.try_local_rules(task)
+        self.assertIsNotNone(result)
+        name, fn = result
+        self.assertEqual(fn(inp1), out1)
+        self.assertEqual(fn(inp2), out2)
+
+
+class TestSynthesis(unittest.TestCase):
+    """Tests for auto-synthesis from input→output diffs."""
+
+    def test_color_substitution(self):
+        """Detect systematic color replacement."""
+        from domains.arc.synthesis import synthesize_from_diff
+
+        inp1 = [[1, 0, 2], [0, 1, 0], [2, 0, 1]]
+        out1 = [[3, 0, 2], [0, 3, 0], [2, 0, 3]]  # 1→3
+
+        inp2 = [[0, 1, 0], [1, 1, 1], [0, 1, 0]]
+        out2 = [[0, 3, 0], [3, 3, 3], [0, 3, 0]]  # 1→3
+
+        task = Task(
+            task_id="color_sub",
+            train_examples=[(inp1, out1), (inp2, out2)],
+            test_inputs=[inp1], test_outputs=[out1],
+        )
+        results = synthesize_from_diff(task)
+        self.assertTrue(any("color" in name for name, _, _ in results))
+        for name, fn, desc in results:
+            if "color" in name:
+                self.assertEqual(fn(inp1), out1)
+                self.assertEqual(fn(inp2), out2)
+
+    def test_directional_fill(self):
+        """Detect rightward pixel propagation."""
+        from domains.arc.synthesis import synthesize_from_diff
+
+        inp1 = [[1, 0, 0], [0, 0, 0], [0, 0, 2]]
+        out1 = [[1, 1, 1], [0, 0, 0], [0, 0, 2]]
+
+        inp2 = [[0, 0, 0], [1, 0, 0], [0, 0, 0]]
+        out2 = [[0, 0, 0], [1, 1, 1], [0, 0, 0]]
+
+        task = Task(
+            task_id="fill_right",
+            train_examples=[(inp1, out1), (inp2, out2)],
+            test_inputs=[inp1], test_outputs=[out1],
+        )
+        results = synthesize_from_diff(task)
+        self.assertTrue(any("fill_right" in name for name, _, _ in results))
+
+    def test_symmetry_completion(self):
+        """Detect horizontal symmetry completion."""
+        from domains.arc.synthesis import synthesize_from_diff
+
+        inp1 = [[1, 0, 0], [1, 1, 0], [1, 0, 0]]
+        out1 = [[1, 0, 1], [1, 1, 1], [1, 0, 1]]
+
+        inp2 = [[0, 0, 2], [0, 2, 2], [0, 0, 2]]
+        out2 = [[2, 0, 2], [2, 2, 2], [2, 0, 2]]
+
+        task = Task(
+            task_id="sym_h",
+            train_examples=[(inp1, out1), (inp2, out2)],
+            test_inputs=[inp1], test_outputs=[out1],
+        )
+        results = synthesize_from_diff(task)
+        self.assertTrue(any("sym" in name for name, _, _ in results))
+
+    def test_no_crash_on_dim_mismatch(self):
+        """Synthesis handles dimension mismatches gracefully."""
+        from domains.arc.synthesis import synthesize_from_diff
+
+        task = Task(
+            task_id="dim_mismatch",
+            train_examples=[([[1, 2]], [[1]]), ([[3, 4]], [[3]])],
+            test_inputs=[[[1, 2]]], test_outputs=[[[1]]],
+        )
+        results = synthesize_from_diff(task)
+        # Should return empty list, not crash
+        self.assertIsInstance(results, list)
+
+
 if __name__ == "__main__":
     unittest.main()

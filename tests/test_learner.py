@@ -582,7 +582,7 @@ class TestConfigDefaults(unittest.TestCase):
     def test_sleep_config_defaults(self):
         cfg = SleepConfig()
         self.assertEqual(cfg.min_occurrences, 2)
-        self.assertEqual(cfg.max_library_size, 50)
+        self.assertEqual(cfg.max_library_size, 100)
         self.assertAlmostEqual(cfg.usefulness_decay, 0.90)
         self.assertAlmostEqual(cfg.reuse_bonus, 2.0)
 
@@ -935,7 +935,7 @@ class TestRunnerHelpers(unittest.TestCase):
             exhaustive_pair_top_k=None, exhaustive_triple_top_k=None,
         )
         resolved = resolve_from_preset(args, PRESETS["contest"])
-        self.assertEqual(resolved["rounds"], 3)  # auto: 50M >= 20M
+        self.assertEqual(resolved["rounds"], 5)  # auto: 50M >= 20M
         self.assertEqual(resolved["compute_cap"], 50_000_000)
         # Auto-derived: wide pools from 50M budget (beam search removed)
         self.assertEqual(resolved["exhaustive_pair_top_k"], 48)
@@ -1247,16 +1247,14 @@ class TestExampleSolveScore(unittest.TestCase):
         self.learner.sleep()
 
         # Check that accepted library entries got their ROI seeded
-        # Score = seed * decay (decay runs in the same sleep cycle)
-        decay = self.learner.sleep_cfg.usefulness_decay  # 0.9
+        # New entries are seeded at usefulness * 0.1 (NOT decayed in same cycle)
         lib = self.learner.memory.get_library()
         scores = self.learner.memory.get_primitive_scores()
         for entry in lib:
             if entry.name.startswith("learned_"):
                 self.assertIn(entry.name, scores,
                               f"Library entry {entry.name} should have ROI seeded")
-                # Seeded at usefulness * 0.1, then decayed by usefulness_decay
-                expected = entry.usefulness * 0.1 * decay
+                expected = entry.usefulness * 0.1
                 self.assertAlmostEqual(scores[entry.name], expected, places=4)
 
 
@@ -1308,12 +1306,12 @@ class TestDeriveSearchParams(unittest.TestCase):
     def test_derive_rounds_medium(self):
         from core.config import derive_rounds
         self.assertEqual(derive_rounds(500_000), 2)
-        self.assertEqual(derive_rounds(3_000_000), 2)
+        self.assertEqual(derive_rounds(3_000_000), 3)
 
     def test_derive_rounds_high(self):
         from core.config import derive_rounds
-        self.assertEqual(derive_rounds(20_000_000), 3)
-        self.assertEqual(derive_rounds(50_000_000), 3)
+        self.assertEqual(derive_rounds(20_000_000), 5)
+        self.assertEqual(derive_rounds(50_000_000), 5)
 
     def test_resolve_auto_derives(self):
         """resolve_from_preset with no CLI overrides produces valid params."""

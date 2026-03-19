@@ -1909,15 +1909,12 @@ class ARCEnv(Environment):
     ) -> Optional[tuple[str, Any]]:
         """Learn cellular automaton rules from training examples.
 
-        Tries three rule types in order of compactness:
-        1. (center, n_nonzero_4neighbors, majority_4neighbor) → output
-        2. (center, n_nonzero_8neighbors) → output
-        3. Raw 3x3 neighborhood → output
+        Uses generic feature search: automatically discovers which pixel
+        features produce consistent rules, trying combinations of
+        increasing complexity: Singles → Pairs → Triples → Raw 3×3.
 
-        Each rule is LOOCV-validated to avoid overfitting.
+        See features.py for the feature pool and search algorithm.
         """
-        from .objects import _test_on_examples
-        from collections import Counter
         examples = task.train_examples
         if not examples or len(examples) < 2:
             return None
@@ -1928,498 +1925,32 @@ class ARCEnv(Environment):
             if inp and out and len(inp[0]) != len(out[0]):
                 return None
 
-        def _nbr_4(grid, r, c):
-            h, w = len(grid), len(grid[0])
-            return [grid[nr][nc] if 0 <= nr < h and 0 <= nc < w else -1
-                    for nr, nc in [(r-1,c),(r+1,c),(r,c-1),(r,c+1)]]
+        from .features import generic_feature_search, \
+            generic_feature_search_composed
 
-        def _learn_compact(exs):
-            """Rule type 1: (center, n_nz_4, majority_4) → output."""
-            rule = {}
-            for inp, out in exs:
-                h, w = len(inp), len(inp[0])
-                for r in range(h):
-                    for c in range(w):
-                        nb = _nbr_4(inp, r, c)
-                        nz = [n for n in nb if n > 0]
-                        key = (inp[r][c], len(nz),
-                               Counter(nz).most_common(1)[0][0] if nz else 0)
-                        val = out[r][c]
-                        if key in rule and rule[key] != val:
-                            return None
-                        rule[key] = val
-            return rule
+        # Try direct feature search
+        result = generic_feature_search(examples)
+        if result is None:
+            # Try composed (depth-2) search
+            result = generic_feature_search_composed(examples)
+        if result is None:
+            return None
 
-        def _apply_compact(grid, rule):
-            h, w = len(grid), len(grid[0])
-            result = []
-            for r in range(h):
-                row = []
-                for c in range(w):
-                    nb = _nbr_4(grid, r, c)
-                    nz = [n for n in nb if n > 0]
-                    key = (grid[r][c], len(nz),
-                           Counter(nz).most_common(1)[0][0] if nz else 0)
-                    row.append(rule.get(key, grid[r][c]))
-                result.append(row)
-            return result
+        name, fn, rule = result
+        prim = Primitive(name=name, arity=0, fn=fn, domain="arc")
+        self.register_primitive(prim)
 
-        def _learn_v2(exs):
-            """Rule type 2: (center, n_nz_8) → output."""
-            rule = {}
-            for inp, out in exs:
-                h, w = len(inp), len(inp[0])
-                for r in range(h):
-                    for c in range(w):
-                        n_nz = sum(1 for dr in range(-1,2) for dc in range(-1,2)
-                                   if (dr or dc) and 0<=r+dr<h and 0<=c+dc<w
-                                   and inp[r+dr][c+dc] != 0)
-                        key = (inp[r][c], n_nz)
-                        val = out[r][c]
-                        if key in rule and rule[key] != val:
-                            return None
-                        rule[key] = val
-            return rule
-
-        def _apply_v2(grid, rule):
-            h, w = len(grid), len(grid[0])
-            result = []
-            for r in range(h):
-                row = []
-                for c in range(w):
-                    n_nz = sum(1 for dr in range(-1,2) for dc in range(-1,2)
-                               if (dr or dc) and 0<=r+dr<h and 0<=c+dc<w
-                               and grid[r+dr][c+dc] != 0)
-                    key = (grid[r][c], n_nz)
-                    row.append(rule.get(key, grid[r][c]))
-                result.append(row)
-            return result
-
-        def _learn_raw3(exs):
-            """Rule type 3: raw 3x3 neighborhood → output."""
-            rule = {}
-            for inp, out in exs:
-                h, w = len(inp), len(inp[0])
-                for r in range(h):
-                    for c in range(w):
-                        key = tuple(inp[r+dr][c+dc] if 0<=r+dr<h and 0<=c+dc<w else -1
-                                    for dr in range(-1,2) for dc in range(-1,2))
-                        val = out[r][c]
-                        if key in rule and rule[key] != val:
-                            return None
-                        rule[key] = val
-            return rule
-
-        def _apply_raw3(grid, rule):
-            h, w = len(grid), len(grid[0])
-            result = []
-            for r in range(h):
-                row = []
-                for c in range(w):
-                    key = tuple(grid[r+dr][c+dc] if 0<=r+dr<h and 0<=c+dc<w else -1
-                                for dr in range(-1,2) for dc in range(-1,2))
-                    row.append(rule.get(key, grid[r][c]))
-                result.append(row)
-            return result
-
-        # Rule type 4: position-modular (handles periodic patterns)
-        def _learn_pos_mod(exs, period):
-            """Rule: (center, r%period, c%period) → output."""
-            rule = {}
-            for inp, out in exs:
-                h, w = len(inp), len(inp[0])
-                for r in range(h):
-                    for c in range(w):
-                        key = (inp[r][c], r % period, c % period)
-                        val = out[r][c]
-                        if key in rule and rule[key] != val:
-                            return None
-                        rule[key] = val
-            return rule
-
-        def _apply_pos_mod(grid, rule, period):
-            h, w = len(grid), len(grid[0])
-            return [[rule.get((grid[r][c], r % period, c % period), grid[r][c])
-                      for c in range(w)] for r in range(h)]
-
-        # Try each rule type with LOOCV
-        rule_types = [
-            ("compact_local_rule", _learn_compact, _apply_compact),
-            ("count_local_rule", _learn_v2, _apply_v2),
-            ("raw3x3_local_rule", _learn_raw3, _apply_raw3),
-        ]
-        # Add position-modular rules for small periods
-        for period in [2, 3, 4, 5]:
-            rule_types.append((
-                f"pos_mod{period}_rule",
-                lambda exs, p=period: _learn_pos_mod(exs, p),
-                lambda grid, rule, p=period: _apply_pos_mod(grid, rule, p),
-            ))
-
-        # Rule type 5: (center, n_distinct_4neighbor_colors) → output
-        def _learn_ncolors(exs):
-            rule = {}
-            for inp, out in exs:
-                h, w = len(inp), len(inp[0])
-                for r in range(h):
-                    for c in range(w):
-                        nc = len(set(inp[r+dr][c+dc]
-                                     for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]
-                                     if 0 <= r+dr < h and 0 <= c+dc < w))
-                        key = (inp[r][c], nc)
-                        val = out[r][c]
-                        if key in rule and rule[key] != val:
-                            return None
-                        rule[key] = val
-            return rule
-
-        def _apply_ncolors(grid, rule):
-            h, w = len(grid), len(grid[0])
-            return [[rule.get((grid[r][c], len(set(
-                        grid[r+dr][c+dc]
-                        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]
-                        if 0 <= r+dr < h and 0 <= c+dc < w))),
-                     grid[r][c])
-                     for c in range(w)] for r in range(h)]
-
-        rule_types.append(("ncolors_local_rule", _learn_ncolors, _apply_ncolors))
-
-        # Rule type 6: (center, sorted_set_of_4neighbor_colors) → output
-        def _learn_nbr_set(exs):
-            rule = {}
-            for inp, out in exs:
-                h, w = len(inp), len(inp[0])
-                for r in range(h):
-                    for c in range(w):
-                        nbr = tuple(sorted(set(
-                            inp[r+dr][c+dc]
-                            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]
-                            if 0 <= r+dr < h and 0 <= c+dc < w)))
-                        key = (inp[r][c], nbr)
-                        val = out[r][c]
-                        if key in rule and rule[key] != val:
-                            return None
-                        rule[key] = val
-            return rule
-
-        def _apply_nbr_set(grid, rule):
-            h, w = len(grid), len(grid[0])
-            result = []
-            for r in range(h):
-                row = []
-                for c in range(w):
-                    nbr = tuple(sorted(set(
-                        grid[r+dr][c+dc]
-                        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]
-                        if 0 <= r+dr < h and 0 <= c+dc < w)))
-                    row.append(rule.get((grid[r][c], nbr), grid[r][c]))
-                result.append(row)
-            return result
-
-        rule_types.append(("nbr_set_local_rule", _learn_nbr_set, _apply_nbr_set))
-
-        # Rule type 7: (center, n_nonzero_8neighbors, has_diagonal_nonzero)
-        def _learn_8nbr_diag(exs):
-            rule = {}
-            for inp, out in exs:
-                h, w = len(inp), len(inp[0])
-                for r in range(h):
-                    for c in range(w):
-                        n_nz = sum(1 for dr in range(-1, 2) for dc in range(-1, 2)
-                                   if (dr or dc) and 0 <= r+dr < h and 0 <= c+dc < w
-                                   and inp[r+dr][c+dc] != 0)
-                        has_diag = int(any(
-                            0 <= r+dr < h and 0 <= c+dc < w
-                            and inp[r+dr][c+dc] != 0
-                            for dr, dc in [(-1,-1),(-1,1),(1,-1),(1,1)]))
-                        key = (inp[r][c], n_nz, has_diag)
-                        val = out[r][c]
-                        if key in rule and rule[key] != val:
-                            return None
-                        rule[key] = val
-            return rule
-
-        def _apply_8nbr_diag(grid, rule):
-            h, w = len(grid), len(grid[0])
-            result = []
-            for r in range(h):
-                row = []
-                for c in range(w):
-                    n_nz = sum(1 for dr in range(-1, 2) for dc in range(-1, 2)
-                               if (dr or dc) and 0 <= r+dr < h and 0 <= c+dc < w
-                               and grid[r+dr][c+dc] != 0)
-                    has_diag = int(any(
-                        0 <= r+dr < h and 0 <= c+dc < w
-                        and grid[r+dr][c+dc] != 0
-                        for dr, dc in [(-1,-1),(-1,1),(1,-1),(1,1)]))
-                    row.append(rule.get((grid[r][c], n_nz, has_diag), grid[r][c]))
-                result.append(row)
-            return result
-
-        rule_types.append(("8nbr_diag_local_rule", _learn_8nbr_diag, _apply_8nbr_diag))
-
-        # Rule type 8: (center, min_nonzero_8neighbor_color) → output
-        def _learn_min_nz_nbr(exs):
-            rule = {}
-            for inp, out in exs:
-                h, w = len(inp), len(inp[0])
-                for r in range(h):
-                    for c in range(w):
-                        mn = min((inp[r+dr][c+dc]
-                                  for dr in range(-1, 2) for dc in range(-1, 2)
-                                  if (dr or dc) and 0 <= r+dr < h and 0 <= c+dc < w
-                                  and inp[r+dr][c+dc] != 0),
-                                 default=-1)
-                        key = (inp[r][c], mn)
-                        val = out[r][c]
-                        if key in rule and rule[key] != val:
-                            return None
-                        rule[key] = val
-            return rule
-
-        def _apply_min_nz_nbr(grid, rule):
-            h, w = len(grid), len(grid[0])
-            result = []
-            for r in range(h):
-                row = []
-                for c in range(w):
-                    mn = min((grid[r+dr][c+dc]
-                              for dr in range(-1, 2) for dc in range(-1, 2)
-                              if (dr or dc) and 0 <= r+dr < h and 0 <= c+dc < w
-                              and grid[r+dr][c+dc] != 0),
-                             default=-1)
-                    row.append(rule.get((grid[r][c], mn), grid[r][c]))
-                result.append(row)
-            return result
-
-        rule_types.append(("min_nz_nbr_local_rule", _learn_min_nz_nbr, _apply_min_nz_nbr))
-
-        # Rule type 9: (center, left_color, right_color) → output
-        def _learn_lr(exs):
-            rule = {}
-            for inp, out in exs:
-                h, w = len(inp), len(inp[0])
-                for r in range(h):
-                    for c in range(w):
-                        key = (inp[r][c],
-                               inp[r][c-1] if c > 0 else -1,
-                               inp[r][c+1] if c < w-1 else -1)
-                        val = out[r][c]
-                        if key in rule and rule[key] != val:
-                            return None
-                        rule[key] = val
-            return rule
-
-        def _apply_lr(grid, rule):
-            h, w = len(grid), len(grid[0])
-            return [[rule.get((grid[r][c],
-                               grid[r][c-1] if c > 0 else -1,
-                               grid[r][c+1] if c < w-1 else -1),
-                              grid[r][c])
-                     for c in range(w)] for r in range(h)]
-
-        rule_types.append(("lr_context_rule", _learn_lr, _apply_lr))
-
-        # Rule type 10: (center, n_nonzero_in_row, n_nonzero_in_col) → output
-        def _learn_rowcol_nz(exs):
-            rule = {}
-            for inp, out in exs:
-                h, w = len(inp), len(inp[0])
-                row_nz = [sum(1 for c in range(w) if inp[r][c] != 0)
-                          for r in range(h)]
-                col_nz = [sum(1 for r in range(h) if inp[r][c] != 0)
-                          for c in range(w)]
-                for r in range(h):
-                    for c in range(w):
-                        key = (inp[r][c], row_nz[r], col_nz[c])
-                        val = out[r][c]
-                        if key in rule and rule[key] != val:
-                            return None
-                        rule[key] = val
-            return rule
-
-        def _apply_rowcol_nz(grid, rule):
-            h, w = len(grid), len(grid[0])
-            row_nz = [sum(1 for c in range(w) if grid[r][c] != 0)
-                      for r in range(h)]
-            col_nz = [sum(1 for r in range(h) if grid[r][c] != 0)
-                      for c in range(w)]
-            return [[rule.get((grid[r][c], row_nz[r], col_nz[c]), grid[r][c])
-                     for c in range(w)] for r in range(h)]
-
-        rule_types.append(("rowcol_nz_rule", _learn_rowcol_nz, _apply_rowcol_nz))
-
-        # Rule type 11: (center, n_distinct_colors_in_row, n_distinct_colors_in_col)
-        def _learn_ndist_rowcol(exs):
-            rule = {}
-            for inp, out in exs:
-                h, w = len(inp), len(inp[0])
-                row_nd = [len(set(inp[r][c] for c in range(w))) for r in range(h)]
-                col_nd = [len(set(inp[r][c] for r in range(h))) for c in range(w)]
-                for r in range(h):
-                    for c in range(w):
-                        key = (inp[r][c], row_nd[r], col_nd[c])
-                        val = out[r][c]
-                        if key in rule and rule[key] != val:
-                            return None
-                        rule[key] = val
-            return rule
-
-        def _apply_ndist_rowcol(grid, rule):
-            h, w = len(grid), len(grid[0])
-            row_nd = [len(set(grid[r][c] for c in range(w))) for r in range(h)]
-            col_nd = [len(set(grid[r][c] for r in range(h))) for c in range(w)]
-            return [[rule.get((grid[r][c], row_nd[r], col_nd[c]), grid[r][c])
-                     for c in range(w)] for r in range(h)]
-
-        rule_types.append(("ndist_rowcol_rule", _learn_ndist_rowcol, _apply_ndist_rowcol))
-
-        # Rule type 12: (center, row_majority_color, col_majority_color)
-        def _learn_rowcol_maj(exs):
-            rule = {}
-            for inp, out in exs:
-                h, w = len(inp), len(inp[0])
-                row_maj = []
-                for r in range(h):
-                    nz = [inp[r][c] for c in range(w) if inp[r][c] != 0]
-                    row_maj.append(Counter(nz).most_common(1)[0][0] if nz else 0)
-                col_maj = []
-                for c in range(w):
-                    nz = [inp[r][c] for r in range(h) if inp[r][c] != 0]
-                    col_maj.append(Counter(nz).most_common(1)[0][0] if nz else 0)
-                for r in range(h):
-                    for c in range(w):
-                        key = (inp[r][c], row_maj[r], col_maj[c])
-                        val = out[r][c]
-                        if key in rule and rule[key] != val:
-                            return None
-                        rule[key] = val
-            return rule
-
-        def _apply_rowcol_maj(grid, rule):
-            h, w = len(grid), len(grid[0])
-            row_maj = []
-            for r in range(h):
-                nz = [grid[r][c] for c in range(w) if grid[r][c] != 0]
-                row_maj.append(Counter(nz).most_common(1)[0][0] if nz else 0)
-            col_maj = []
-            for c in range(w):
-                nz = [grid[r][c] for r in range(h) if grid[r][c] != 0]
-                col_maj.append(Counter(nz).most_common(1)[0][0] if nz else 0)
-            return [[rule.get((grid[r][c], row_maj[r], col_maj[c]), grid[r][c])
-                     for c in range(w)] for r in range(h)]
-
-        rule_types.append(("rowcol_maj_rule", _learn_rowcol_maj, _apply_rowcol_maj))
-
-        for rule_name, learn_fn, apply_fn in rule_types:
-            # First: check if rule is consistent on ALL training
-            rule = learn_fn(examples)
-            if rule is None:
-                continue
-            if not _test_on_examples(lambda g, r=rule, a=apply_fn: a(g, r), examples):
-                continue
-
-            # LOOCV validation
-            loocv_pass = True
-            for hold_idx in range(len(examples)):
-                train_sub = [ex for i, ex in enumerate(examples) if i != hold_idx]
-                rule_sub = learn_fn(train_sub)
-                if rule_sub is None:
-                    loocv_pass = False
-                    break
-                held_inp, held_exp = examples[hold_idx]
-                result = apply_fn(held_inp, rule_sub)
-                if result != held_exp:
-                    loocv_pass = False
-                    break
-
-            if not loocv_pass:
-                continue
-
-            # LOOCV passed — create the transform
-            def _make_fn(r=rule, a=apply_fn):
-                def fn(grid):
-                    return a(grid, r)
-                return fn
-
-            fn = _make_fn()
-            prim = Primitive(name=rule_name, arity=0, fn=fn, domain="arc")
-            self.register_primitive(prim)
-            from .primitives import _PRIM_RULES
-            n_rules = len(rule)
-            sample = list(rule.items())[:8]
-            rules_desc = f"Learned {n_rules} rules: key → output_pixel\n"
-            for k, v in sample:
-                rules_desc += f"  {k} → {v}\n"
-            if n_rules > 8:
-                rules_desc += f"  ... ({n_rules - 8} more)\n"
-            _PRIM_RULES[rule_name] = rules_desc
-            return (rule_name, fn)
-
-        # Also try: local rules on TRANSFORMED inputs (depth-2 composition)
-        from .transformation_primitives import fill_enclosed, dilate
-        for transform_name, transform_fn in [
-            ("fill_enclosed", fill_enclosed),
-            ("dilate", dilate),
-        ]:
-            transformed_examples = []
-            ok = True
-            for inp, out in examples:
-                try:
-                    t_inp = transform_fn(inp)
-                    if (not isinstance(t_inp, list) or not t_inp or
-                            len(t_inp) != len(out) or len(t_inp[0]) != len(out[0])):
-                        ok = False
-                        break
-                    transformed_examples.append((t_inp, out))
-                except Exception:
-                    ok = False
-                    break
-            if not ok or len(transformed_examples) < 2:
-                continue
-
-            for rule_name, learn_fn, apply_fn in [
-                ("compact_local_rule", _learn_compact, _apply_compact),
-                ("count_local_rule", _learn_v2, _apply_v2),
-                ("rowcol_nz_rule", _learn_rowcol_nz, _apply_rowcol_nz),
-            ]:
-                rule = learn_fn(transformed_examples)
-                if rule is None:
-                    continue
-                if not _test_on_examples(
-                        lambda g, r=rule, a=apply_fn, t=transform_fn: a(t(g), r),
-                        examples):
-                    continue
-
-                loocv_pass = True
-                for hold_idx in range(len(transformed_examples)):
-                    train_sub = [ex for i, ex in enumerate(transformed_examples)
-                                 if i != hold_idx]
-                    rule_sub = learn_fn(train_sub)
-                    if rule_sub is None:
-                        loocv_pass = False
-                        break
-                    held_inp = transformed_examples[hold_idx][0]
-                    held_exp = transformed_examples[hold_idx][1]
-                    if apply_fn(held_inp, rule_sub) != held_exp:
-                        loocv_pass = False
-                        break
-
-                if not loocv_pass:
-                    continue
-
-                def _make_composed(r=rule, a=apply_fn, t=transform_fn):
-                    def fn(grid):
-                        return a(t(grid), r)
-                    return fn
-
-                fn = _make_composed()
-                name = f"local_rule({transform_name})"
-                prim = Primitive(name=name, arity=0, fn=fn, domain="arc")
-                self.register_primitive(prim)
-                return (name, fn)
-
-        return None
+        # Store rule metadata for visualization
+        from .primitives import _PRIM_RULES
+        n_rules = len(rule)
+        sample = list(rule.items())[:8]
+        rules_desc = f"Learned {n_rules} rules: key → output_pixel\n"
+        for k, v in sample:
+            rules_desc += f"  {k} → {v}\n"
+        if n_rules > 8:
+            rules_desc += f"  ... ({n_rules - 8} more)\n"
+        _PRIM_RULES[name] = rules_desc
+        return (name, fn)
 
     def try_procedural(
         self, task,
@@ -2441,6 +1972,24 @@ class ARCEnv(Environment):
             self.register_primitive(prim)
             return (name, fn)
         return None
+
+    def synthesize_from_diff(
+        self, task: Task,
+    ) -> list[tuple[str, Any]]:
+        """Auto-synthesize primitives by analyzing input→output diffs.
+
+        Returns list of (name, fn) for all discovered transforms.
+        Each is validated on all training examples.
+        """
+        from .synthesis import synthesize_from_diff as _synthesize
+        results = []
+        for name, fn, desc in _synthesize(task):
+            prim = Primitive(name=name, arity=0, fn=fn, domain="arc")
+            self.register_primitive(prim)
+            from .primitives import _PRIM_RULES
+            _PRIM_RULES[name] = f"Synthesized: {desc}"
+            results.append((name, fn))
+        return results
 
     # Maximum intermediate grid size (pixels).
     MAX_GRID_PIXELS = 10_000

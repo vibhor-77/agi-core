@@ -207,6 +207,7 @@ class Learner:
             self._phase_cross_reference,
             self._phase_local_rules,
             self._phase_procedural,
+            self._phase_synthesis,
             self._phase_conditional_search,
             self._phase_color_fix,
             self._phase_input_pred_correction,
@@ -313,6 +314,25 @@ class Learner:
             ctx.enum_candidates.append(sp)
         logger.debug(f"  [wake] Procedural: {time.time()-t:.2f}s")
         return "procedural" if ctx.solved else None
+
+    def _phase_synthesis(self, ctx: _WakeContext) -> Optional[str]:
+        """Auto-synthesize primitives from input→output diffs."""
+        if ctx.solved or not self.grammar.allow_structural_phases():
+            return None
+        if not hasattr(self.env, 'synthesize_from_diff'):
+            return None
+        t = time.time()
+        results = self.env.synthesize_from_diff(ctx.task)
+        for name, fn in results:
+            sp = self._evaluate_program(Program(root=name), ctx.task)
+            ctx.n_evals += 1
+            self._update_pareto_front(ctx.pareto, sp)
+            ctx.update_best(sp)
+            ctx.enum_candidates.append(sp)
+            if ctx.solved:
+                break
+        logger.debug(f"  [wake] Synthesis: {time.time()-t:.2f}s")
+        return "synthesis" if ctx.solved else None
 
     def _phase_conditional_search(self, ctx: _WakeContext) -> Optional[str]:
         """Try if(predicate, A, B) programs."""
@@ -735,8 +755,9 @@ class Learner:
             quality = self._unsolved_quality(scored, cfg)
             self._credit_primitives(scored.program, quality)
 
-        # Extract subtrees
+        # Extract subtrees — track which come from solved programs
         subtree_counts: dict[str, list[tuple[Program, str, float]]] = {}
+        solved_subtrees: set[str] = set()  # keys with >=1 solved source
 
         for task_id, scored in solutions.items():
             for subtree in self._enumerate_subtrees(scored.program):
@@ -744,6 +765,7 @@ class Learner:
                 if key not in subtree_counts:
                     subtree_counts[key] = []
                 subtree_counts[key].append((subtree, task_id, 1.0))
+                solved_subtrees.add(key)
 
         for task_id, scored in unsolved.items():
             quality = self._unsolved_quality(scored, cfg)
@@ -754,27 +776,39 @@ class Learner:
                 subtree_counts[key].append((subtree, task_id, quality))
 
         # Filter and score
+        # Solved-sourced subtrees need only 1 occurrence (verified-correct);
+        # unsolved-sourced subtrees require min_occurrences to reduce noise.
         candidates = []
         for key, occurrences in subtree_counts.items():
             task_ids = sorted(set(tid for _, tid, _ in occurrences))
             subtree = occurrences[0][0]
-            if len(task_ids) >= cfg.min_occurrences and subtree.size >= cfg.min_size:
+            min_occ = 1 if key in solved_subtrees else cfg.min_occurrences
+            if len(task_ids) >= min_occ and subtree.size >= cfg.min_size:
                 total_quality = sum(w for _, _, w in occurrences)
-                usefulness = total_quality * math.log(subtree.size + 1)
+                # Transfer bonus: reward entries spanning diverse tasks
+                transfer = math.log(1 + len(task_ids))
+                usefulness = total_quality * math.log(subtree.size + 1) * transfer
                 candidates.append((subtree, task_ids, usefulness))
 
         candidates.sort(key=lambda c: c[2], reverse=True)
 
         existing_reprs = {repr(e.program) for e in self.memory.get_library()}
+        existing_roots = [e.program.root for e in self.memory.get_library()]
         new_entries = []
         for subtree, task_ids, usefulness in candidates:
             if repr(subtree) in existing_reprs:
                 continue
+            # Diversity scoring: penalize structurally similar entries
+            all_roots = existing_roots + [e.program.root for e in new_entries]
+            n_similar = sum(1 for r in all_roots if r == subtree.root)
+            diversity = 1.0 / (1.0 + n_similar)
+            adjusted_usefulness = usefulness * (0.5 + 0.5 * diversity)
+
             entry_name = f"learned_{lib_before + len(new_entries)}"
             entry = LibraryEntry(
                 name=entry_name,
                 program=subtree,
-                usefulness=usefulness,
+                usefulness=adjusted_usefulness,
                 reuse_count=0,
                 source_tasks=task_ids,
                 domain="",
@@ -782,11 +816,15 @@ class Learner:
             new_entries.append(entry)
             existing_reprs.add(repr(subtree))
 
-        # Add to memory
+        # Add to memory and seed ROI scores
         accepted = []
         for entry in new_entries:
             if self.memory.add_to_library(entry):
                 accepted.append(entry)
+                # Seed primitive score so the entry gets prioritized
+                # in future pair/triple pool ranking
+                self.memory.update_primitive_score(
+                    entry.name, entry.usefulness * 0.1)
 
         # Decay old entries
         for entry in self.memory.get_library():
